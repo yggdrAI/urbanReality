@@ -358,6 +358,21 @@ export default function MapView() {
                 visibility: layers.traffic ? "visible" : "none" // Respect initial state
               }
             });
+
+            // Ensure traffic layer does not sit above UI-focused layers (place it below AQI/flood)
+            try {
+              if (map.getLayer('aqi-layer')) {
+                map.moveLayer('traffic-layer', 'aqi-layer');
+              } else if (map.getLayer('flood-layer')) {
+                map.moveLayer('traffic-layer', 'flood-layer');
+              } else if (map.getStyle() && map.getStyle().layers && map.getStyle().layers.length) {
+                // move to bottom-most drawable layer to avoid UI overlap
+                const bottomLayerId = map.getStyle().layers[0].id;
+                map.moveLayer('traffic-layer', bottomLayerId);
+              }
+            } catch (moveErr) {
+              console.warn('Could not reposition traffic layer:', moveErr);
+            }
           }
         } catch (err) {
           console.error("Error loading traffic data:", err);
@@ -462,13 +477,29 @@ export default function MapView() {
       const { lng, lat } = e.lngLat;
       const y = yearRef.current;
       
-      // Show loading popup immediately
+      // Show loading popup immediately with smart offset to avoid overlapping controls
       if (popupRef.current && mapRef.current) {
+        const map = mapRef.current;
+        const point = map.project([lng, lat]);
+        const w = map.getContainer().clientWidth;
+        const h = map.getContainer().clientHeight;
+        // default offset
+        let popupOffset = 12;
+        // If near top-right controls, nudge left
+        if (point.x > w * 0.66 && point.y < h * 0.3) popupOffset = [-220, 12];
+        // If near top-left controls, nudge right
+        else if (point.x < w * 0.33 && point.y < h * 0.3) popupOffset = [220, 12];
+        // If near bottom, nudge up
+        else if (point.y > h * 0.75) popupOffset = [12, -220];
+        // If click is in bottom-left area where panels/slider live, push popup to the right/up to avoid overlap
+        else if (point.y > h * 0.6 && point.x < w * 0.38) popupOffset = [220, -160];
+
         popupRef.current
           .setLngLat(e.lngLat)
+          .setOffset(popupOffset)
           .setHTML(`
             <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 20px; text-align: center;">
-              <div style="display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.1); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px;"></div>
+              <div style="display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.06); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px;"></div>
               <div style="font-size: 13px; color: #94a3b8; font-weight: 500;">Loading AQI data...</div>
             </div>
             <style>
@@ -608,7 +639,7 @@ export default function MapView() {
 
         // Dark-themed AQI card
         aqiHtml = `
-          <div style="background: rgba(2,6,23,0.88); border-radius: 12px; padding: 16px; margin-top: 12px; border: 1px solid rgba(255,255,255,0.06); color: #e6eef8;">
+          <div style="background: linear-gradient(180deg, rgba(2,6,23,0.96), rgba(2,6,23,0.88)); box-shadow: 0 20px 40px rgba(0,0,0,0.6); border-radius: 12px; padding: 16px; margin-top: 12px; border: 1px solid rgba(255,255,255,0.06); color: #e6eef8;">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:12px;">
               <div style="flex:1">
                 <div style="font-size:11px;color:#94a3b8;font-weight:600;letter-spacing:0.6px;text-transform:uppercase;margin-bottom:6px;">Air Quality Index</div>
@@ -656,7 +687,7 @@ export default function MapView() {
         else if (nearestAQI.value > 300) aqiColor = '#6b21a8';
         
         aqiHtml = `
-          <div style="background: rgba(2,6,23,0.88); border-radius:12px; padding:14px; margin-top:12px; border:1px solid rgba(255,255,255,0.06); color:#e6eef8;">
+          <div style="background: linear-gradient(180deg, rgba(2,6,23,0.96), rgba(2,6,23,0.88)); box-shadow: 0 20px 40px rgba(0,0,0,0.6); border-radius:12px; padding:14px; margin-top:12px; border:1px solid rgba(255,255,255,0.06); color:#e6eef8;">
             <div style="display:flex;align-items:center;justify-content:space-between;">
               <div style="flex:1">
                 <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;margin-bottom:6px;">Air Quality Index</div>
@@ -670,7 +701,7 @@ export default function MapView() {
         `;
       } else {
         aqiHtml = `
-          <div style="background: rgba(15, 23, 42, 0.6); border-radius: 12px; padding: 20px; margin-top: 16px; border: 1px solid rgba(255,255,255,0.1); text-align: center;">
+          <div style="background: linear-gradient(180deg, rgba(2,6,23,0.96), rgba(2,6,23,0.88)); box-shadow: 0 20px 40px rgba(0,0,0,0.6); border-radius: 12px; padding: 20px; margin-top: 16px; border: 1px solid rgba(255,255,255,0.1); text-align: center;">
             <div style="color: #94a3b8; font-size: 13px; line-height: 1.5;">
               ${OPENWEATHER_KEY ? 'AQI data not available for this location' : 'Set VITE_OPENWEATHER_API_KEY for real-time AQI'}
             </div>
@@ -679,11 +710,50 @@ export default function MapView() {
       }
 
       if (popupRef.current && mapRef.current) {
+        const map = mapRef.current;
+        const point = map.project([lng, lat]);
+        const w = map.getContainer().clientWidth;
+        const h = map.getContainer().clientHeight;
+        let popupOffset = 12;
+        if (point.x > w * 0.66 && point.y < h * 0.3) popupOffset = [-220, 12];
+        else if (point.x < w * 0.33 && point.y < h * 0.3) popupOffset = [220, 12];
+        else if (point.y > h * 0.75) popupOffset = [12, -220];
+        else if (point.y > h * 0.6 && point.x < w * 0.38) popupOffset = [220, -160];
+
+        const closePopup = `
+          <div
+            style="
+              position:absolute;
+              top:10px;
+              right:12px;
+              cursor:pointer;
+              font-size:16px;
+              color:#94a3b8;
+              font-weight:600;
+              width:24px;
+              height:24px;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              border-radius:4px;
+              transition:all 0.2s;
+              z-index:1300;
+            "
+            onmouseover="this.style.background='rgba(255,255,255,0.1)';this.style.color='#f1f5f9'"
+            onmouseout="this.style.background='transparent';this.style.color='#94a3b8'"
+            onclick="this.closest('.maplibregl-popup').remove()"
+          >
+            ✕
+          </div>
+        `;
+
         popupRef.current
           .setLngLat(e.lngLat)
+          .setOffset(popupOffset)
           .setHTML(`
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 0; margin: 0;">
-              <div style="padding: 20px 20px 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.1);">
+            <div style="position:relative; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 0; margin: 0;">
+              ${closePopup}
+              <div style="padding: 20px 20px 16px 20px;">
                 <div style="font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px;">Location</div>
                 <div style="font-size: 12px; color: #94a3b8; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
               </div>

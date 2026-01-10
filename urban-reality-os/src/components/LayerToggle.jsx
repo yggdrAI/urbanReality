@@ -24,7 +24,7 @@ export default function LayerToggle({ layers, setLayers }) {
     >
       <strong style={{ display: "block", marginBottom: 8 }}>Layers</strong>
 
-      {Object.keys(layers).map((key) => (
+      {Object.keys(layers).filter((k) => k !== 'traffic').map((key) => (
         <div key={key} style={{ marginTop: 6 }}>
           <label
             style={{

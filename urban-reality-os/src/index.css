@@ -21,3 +21,28 @@ html, body {
 html::-webkit-scrollbar, body::-webkit-scrollbar {
   display: none; /* Chrome, Safari, Opera */
 }
+
+/* Map popup theming and z-index to avoid overlap with map controls */
+.maplibregl-popup {
+  z-index: 1100; /* below controls which we set higher */
+}
+.maplibregl-popup-content {
+  background: rgba(2,6,23,0.92) !important;
+  color: #e6eef8 !important;
+  border-radius: 10px !important;
+  box-shadow: 0 8px 30px rgba(2,6,23,0.6) !important;
+  padding: 0 !important;
+}
+.maplibregl-popup-tip {
+  display: none; /* cleaner card without the pointer tip */
+}
+
+/* Ensure navigation and other controls sit above popups so they never get obscured */
+.maplibregl-ctrl {
+  z-index: 1200 !important;
+}
+
+/* Small responsive tweak: make popups max-width so content wraps nicely */
+.maplibregl-popup-content > div {
+  max-width: 340px;
+}
