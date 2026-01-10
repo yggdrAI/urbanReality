@@ -6,6 +6,7 @@ import LayerToggle from "./LayerToggle";
 import EconomicPanel from "./EconomicPanel";
 import CitySuggestions from "./CitySuggestions";
 import TimeSlider from "./TimeSlider";
+import { getUrbanAnalysis } from "../utils/gemini";
 
 // Constants
 const INITIAL_YEAR = 2025;
@@ -34,6 +35,38 @@ const IMPACT_MODEL = {
 };
 // Use environment variable - set VITE_TOMTOM_API_KEY in your .env file
 const TOMTOM_KEY = import.meta.env.VITE_TOMTOM_API_KEY;
+// OpenWeather Air Pollution API key (set VITE_OPENWEATHER_API_KEY in .env)
+// Get free API key from: https://openweathermap.org/api/air-pollution
+const OPENWEATHER_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY || "";
+
+// Major Indian cities with coordinates
+const MAJOR_INDIAN_CITIES = [
+  { name: "Delhi", lat: 28.6139, lng: 77.2090 },
+  { name: "Mumbai", lat: 19.0760, lng: 72.8777 },
+  { name: "Kolkata", lat: 22.5726, lng: 88.3639 },
+  { name: "Chennai", lat: 13.0827, lng: 80.2707 },
+  { name: "Bangalore", lat: 12.9716, lng: 77.5946 },
+  { name: "Hyderabad", lat: 17.3850, lng: 78.4867 },
+  { name: "Pune", lat: 18.5204, lng: 73.8567 },
+  { name: "Ahmedabad", lat: 23.0225, lng: 72.5714 },
+  { name: "Jaipur", lat: 26.9124, lng: 75.8649 },
+  { name: "Surat", lat: 21.1702, lng: 72.8311 },
+  { name: "Lucknow", lat: 26.8467, lng: 80.9462 },
+  { name: "Kanpur", lat: 26.4499, lng: 80.3319 },
+  { name: "Nagpur", lat: 21.1458, lng: 79.0882 },
+  { name: "Indore", lat: 22.7196, lng: 75.8577 },
+  { name: "Thane", lat: 19.2183, lng: 72.9667 },
+  { name: "Bhopal", lat: 23.2599, lng: 77.4126 },
+  { name: "Visakhapatnam", lat: 17.6868, lng: 83.2185 },
+  { name: "Patna", lat: 25.5941, lng: 85.1376 },
+  { name: "Vadodara", lat: 22.3072, lng: 73.1812 },
+  { name: "Ghaziabad", lat: 28.6692, lng: 77.4378 },
+  { name: "Ludhiana", lat: 30.9010, lng: 75.8573 },
+  { name: "Agra", lat: 27.1767, lng: 78.0081 },
+  { name: "Nashik", lat: 19.9975, lng: 73.7898 },
+  { name: "Faridabad", lat: 28.4089, lng: 77.3167 },
+  { name: "Meerut", lat: 28.9845, lng: 77.7064 }
+];
 
 export default function MapView() {
   const mapContainer = useRef(null);
@@ -46,6 +79,8 @@ export default function MapView() {
 
   const [year, setYear] = useState(INITIAL_YEAR);
   const [impactData, setImpactData] = useState(null);
+  const [urbanAnalysis, setUrbanAnalysis] = useState(null);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [floodMode, setFloodMode] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -65,6 +100,8 @@ export default function MapView() {
 
   const [mapStyle, setMapStyle] = useState("default"); // "default", "satellite", "terrain"
   const [showLayersMenu, setShowLayersMenu] = useState(false);
+  const [aqiGeo, setAqiGeo] = useState(null);
+  const [loadingAQI, setLoadingAQI] = useState(false);
 
 
   /* ================= MAP INIT ================= */
@@ -118,32 +155,120 @@ export default function MapView() {
 
         map.setTerrain({ source: "terrain", exaggeration: 1.4 });
 
-        /* ===== AQI ===== */
+        /* ===== AQI (REAL-TIME FROM OPENWEATHER API) ===== */
+        const fetchAllCitiesAQI = async () => {
+          if (!OPENWEATHER_KEY) {
+            console.warn("OpenWeather API key not available");
+            return null;
+          }
+
+          try {
+            setLoadingAQI(true);
+            const aqiPromises = MAJOR_INDIAN_CITIES.map(async (city) => {
+              try {
+                const response = await fetch(
+                  `https://api.openweathermap.org/data/2.5/air_pollution?lat=${city.lat}&lon=${city.lng}&appid=${OPENWEATHER_KEY}`
+                );
+
+                if (!response.ok) {
+                  throw new Error(`API responded with status ${response.status}`);
+                }
+
+                const data = await response.json();
+                
+                if (data && data.list && data.list.length > 0) {
+                  const aqi = data.list[0].main.aqi; // AQI value (1-5)
+                  const components = data.list[0].components;
+                  const pm25 = components.pm2_5 || 0;
+                  const pm10 = components.pm10 || 0;
+                  
+                  // Convert PM2.5 to US AQI scale (0-500)
+                  let usAQI = 0;
+                  if (pm25 > 0) {
+                    if (pm25 <= 12) usAQI = Math.round((pm25 / 12) * 50);
+                    else if (pm25 <= 35.4) usAQI = Math.round(50 + ((pm25 - 12) / 23.4) * 50);
+                    else if (pm25 <= 55.4) usAQI = Math.round(100 + ((pm25 - 35.4) / 20) * 50);
+                    else if (pm25 <= 150.4) usAQI = Math.round(150 + ((pm25 - 55.4) / 95) * 100);
+                    else if (pm25 <= 250.4) usAQI = Math.round(250 + ((pm25 - 150.4) / 100) * 100);
+                    else usAQI = Math.round(350 + ((pm25 - 250.4) / 149.6) * 150);
+                    usAQI = Math.min(500, Math.max(0, usAQI));
+                  } else {
+                    const aqiMap = { 1: 50, 2: 100, 3: 150, 4: 200, 5: 300 };
+                    usAQI = aqiMap[aqi] || 100;
+                  }
+
+                  return {
+                    type: "Feature",
+                    properties: {
+                      aqi: usAQI,
+                      city: city.name,
+                      level: aqi,
+                      pm25: Math.round(pm25 * 10) / 10,
+                      pm10: Math.round(pm10 * 10) / 10
+                    },
+                    geometry: {
+                      type: "Point",
+                      coordinates: [city.lng, city.lat]
+                    }
+                  };
+                }
+                return null;
+              } catch (err) {
+                console.warn(`Failed to fetch AQI for ${city.name}:`, err);
+                return null;
+              }
+            });
+
+            const results = await Promise.all(aqiPromises);
+            const features = results.filter(f => f !== null);
+            
+            return {
+              type: "FeatureCollection",
+              features: features
+            };
+          } catch (err) {
+            console.error("Error fetching AQI data:", err);
+            return null;
+          } finally {
+            setLoadingAQI(false);
+          }
+        };
+
         try {
-          const aqiResponse = await fetch("/data/aqi.json");
-          if (!aqiResponse.ok) throw new Error("Failed to load AQI data");
-          const aqiData = await aqiResponse.json();
+          const aqiData = await fetchAllCitiesAQI();
           
-          if (isMounted) {
+          if (isMounted && aqiData && aqiData.features.length > 0) {
             map.addSource("aqi", { type: "geojson", data: aqiData });
+            setAqiGeo(aqiData);
             map.addLayer({
               id: "aqi-layer",
               type: "circle",
               source: "aqi",
               paint: {
-                "circle-radius": 8,
-                "circle-opacity": 0.85,
+                "circle-radius": 12,
+                "circle-opacity": 0.9,
+                "circle-stroke-width": 2,
+                "circle-stroke-color": "#ffffff",
+                "circle-stroke-opacity": 0.8,
                 "circle-color": [
                   "interpolate",
                   ["linear"],
                   ["get", "aqi"],
+                  0, "#22c55e",
                   50, "#22c55e",
                   100, "#eab308",
                   150, "#f97316",
-                  200, "#dc2626"
+                  200, "#dc2626",
+                  300, "#9333ea",
+                  400, "#6b21a8"
                 ]
+              },
+              layout: {
+                visibility: layers.aqi ? "visible" : "none"
               }
             });
+          } else if (isMounted && !OPENWEATHER_KEY) {
+            console.warn("OpenWeather API key not set. AQI layer will not be available.");
           }
         } catch (err) {
           console.error("Error loading AQI data:", err);
@@ -266,6 +391,70 @@ export default function MapView() {
       }
     };
 
+    /* ===== FETCH REAL-TIME AQI ===== */
+    const fetchAQI = async (lat, lng) => {
+      if (!OPENWEATHER_KEY) {
+        return null;
+      }
+
+      try {
+        setLoadingAQI(true);
+        const response = await fetch(
+          `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lng}&appid=${OPENWEATHER_KEY}`
+        );
+
+        if (!response.ok) {
+          throw new Error(`API responded with status ${response.status}`);
+        }
+
+        const data = await response.json();
+        
+        if (data && data.list && data.list.length > 0) {
+          const aqi = data.list[0].main.aqi; // AQI value (1-5)
+          const components = data.list[0].components; // Pollutant concentrations
+          
+          // Convert AQI scale (1-5) to US AQI scale (0-500) for better understanding
+          const pm25 = components.pm2_5 || 0;
+          const pm10 = components.pm10 || 0;
+          
+          // Rough conversion: using PM2.5 as primary indicator
+          let usAQI = 0;
+          if (pm25 > 0) {
+            if (pm25 <= 12) usAQI = Math.round((pm25 / 12) * 50);
+            else if (pm25 <= 35.4) usAQI = Math.round(50 + ((pm25 - 12) / 23.4) * 50);
+            else if (pm25 <= 55.4) usAQI = Math.round(100 + ((pm25 - 35.4) / 20) * 50);
+            else if (pm25 <= 150.4) usAQI = Math.round(150 + ((pm25 - 55.4) / 95) * 100);
+            else if (pm25 <= 250.4) usAQI = Math.round(250 + ((pm25 - 150.4) / 100) * 100);
+            else usAQI = Math.round(350 + ((pm25 - 250.4) / 149.6) * 150);
+            usAQI = Math.min(500, Math.max(0, usAQI));
+          } else {
+            const aqiMap = { 1: 50, 2: 100, 3: 150, 4: 200, 5: 300 };
+            usAQI = aqiMap[aqi] || 100;
+          }
+
+          return {
+            aqi: usAQI,
+            level: aqi,
+            levelText: ['Good', 'Fair', 'Moderate', 'Poor', 'Very Poor'][aqi - 1] || 'Unknown',
+            components: {
+              pm25: Math.round(pm25 * 10) / 10,
+              pm10: Math.round(pm10 * 10) / 10,
+              no2: Math.round((components.no2 || 0) * 10) / 10,
+              o3: Math.round((components.o3 || 0) * 10) / 10,
+              co: Math.round((components.co || 0) * 10) / 10
+            },
+            timestamp: new Date(data.list[0].dt * 1000).toLocaleTimeString()
+          };
+        }
+        return null;
+      } catch (err) {
+        console.warn("Could not fetch real-time AQI:", err);
+        return null;
+      } finally {
+        setLoadingAQI(false);
+      }
+    };
+
     /* ===== AI IMPACT MODEL ===== */
     const handleMapClick = async (e) => {
       if (!mapRef.current) return;
@@ -273,6 +462,28 @@ export default function MapView() {
       const { lng, lat } = e.lngLat;
       const y = yearRef.current;
       
+      // Show loading popup immediately
+      if (popupRef.current && mapRef.current) {
+        popupRef.current
+          .setLngLat(e.lngLat)
+          .setHTML(`
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 20px; text-align: center;">
+              <div style="display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.1); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px;"></div>
+              <div style="font-size: 13px; color: #94a3b8; font-weight: 500;">Loading AQI data...</div>
+            </div>
+            <style>
+              @keyframes spin { to { transform: rotate(360deg); } }
+            </style>
+          `)
+          .addTo(mapRef.current);
+      }
+
+      // Fetch real-time AQI first
+      let realTimeAQI = null;
+      if (OPENWEATHER_KEY) {
+        realTimeAQI = await fetchAQI(lat, lng);
+      }
+
       // Calculate time factor for future projections
       const yearsElapsed = y - MIN_YEAR;
       const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
@@ -289,13 +500,10 @@ export default function MapView() {
           if (response.ok) {
             const data = await response.json();
             
-            // Calculate congestion ratio: (Current Speed / Free Flow Speed)
-            // Lower ratio = Higher Traffic. Inverting for "Traffic Impact" (0 to 1 scale)
             if (data.flowSegmentData) {
               const { currentSpeed, freeFlowSpeed } = data.flowSegmentData;
               if (freeFlowSpeed > 0) {
                 const congestion = 1 - (currentSpeed / freeFlowSpeed);
-                // Clamp between 0 and 1
                 currentTrafficFactor = Math.max(0, Math.min(1, congestion));
               }
             }
@@ -306,14 +514,13 @@ export default function MapView() {
       }
 
       // 2. Mix Real Data with Future Projections
-      // We combine real traffic (currentTrafficFactor) with your time-based growth
-      const projectedTraffic = currentTrafficFactor + (0.5 * timeFactor); // Traffic gets worse over time
+      const projectedTraffic = currentTrafficFactor + (0.5 * timeFactor);
 
-      const AQI = IMPACT_MODEL.baseAQI + (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI) * timeFactor;
+      // Use real-time AQI if available, otherwise use model
+      const AQI = realTimeAQI ? realTimeAQI.aqi : (IMPACT_MODEL.baseAQI + (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI) * timeFactor);
       const FloodRisk = IMPACT_MODEL.baseFloodRisk + (IMPACT_MODEL.maxFloodRisk - IMPACT_MODEL.baseFloodRisk) * timeFactor;
       const Pop = IMPACT_MODEL.basePopulation + IMPACT_MODEL.populationGrowth * timeFactor;
 
-      // Update calculation to use 'projectedTraffic' instead of the static 'Traffic' constant
       const people = Math.round(
         800 + 110 * AQI + 12000 * FloodRisk + 9000 * projectedTraffic + 0.03 * Pop
       );
@@ -329,10 +536,160 @@ export default function MapView() {
         risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡"
       });
 
+      // Kick off Gemini AI analysis (non-blocking)
+      (async () => {
+        try {
+          setAnalysisLoading(true);
+          setUrbanAnalysis(null);
+          const aiData = { zone: `Delhi Urban Zone (${y})`, people, loss, risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡" };
+          const analysis = await getUrbanAnalysis(aiData, y);
+          setUrbanAnalysis(analysis || "No analysis available.");
+        } catch (err) {
+          console.error("Gemini analysis failed:", err);
+          setUrbanAnalysis("Analysis failed. See console for details.");
+        } finally {
+          setAnalysisLoading(false);
+        }
+      })();
+
+      // Fallback: Find nearest AQI point from static data if no real-time data
+      let nearestAQI = null;
+      if (!realTimeAQI && aqiGeo && aqiGeo.features && aqiGeo.features.length) {
+        const toRad = (deg) => (deg * Math.PI) / 180;
+        const haversine = (lat1, lon1, lat2, lon2) => {
+          const R = 6371e3; // meters
+          const phi1 = toRad(lat1);
+          const phi2 = toRad(lat2);
+          const dPhi = toRad(lat2 - lat1);
+          const dLambda = toRad(lon2 - lon1);
+          const a = Math.sin(dPhi / 2) * Math.sin(dPhi / 2) +
+            Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) * Math.sin(dLambda / 2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+          return R * c;
+        };
+
+        let best = { dist: Infinity, feat: null };
+        for (const f of aqiGeo.features) {
+          const [fx, fy] = f.geometry.coordinates; // [lng, lat]
+          const d = haversine(lat, lng, fy, fx);
+          if (d < best.dist) {
+            best = { dist: d, feat: f };
+          }
+        }
+        if (best.feat) {
+          nearestAQI = {
+            value: best.feat.properties && (best.feat.properties.aqi ?? best.feat.properties.AQI ?? best.feat.properties.value),
+            distance_m: Math.round(best.dist)
+          };
+        }
+      }
+
+      // Build AQI display HTML with modern, minimal design
+      let aqiHtml = '';
+      if (realTimeAQI) {
+        let aqiColor = '#22c55e'; // Green (0-50)
+        let aqiStatus = 'Good';
+        if (realTimeAQI.aqi > 50 && realTimeAQI.aqi <= 100) {
+          aqiColor = '#eab308';
+          aqiStatus = 'Moderate';
+        } else if (realTimeAQI.aqi > 100 && realTimeAQI.aqi <= 150) {
+          aqiColor = '#f97316';
+          aqiStatus = 'Unhealthy for Sensitive';
+        } else if (realTimeAQI.aqi > 150 && realTimeAQI.aqi <= 200) {
+          aqiColor = '#dc2626';
+          aqiStatus = 'Unhealthy';
+        } else if (realTimeAQI.aqi > 200 && realTimeAQI.aqi <= 300) {
+          aqiColor = '#9333ea';
+          aqiStatus = 'Very Unhealthy';
+        } else if (realTimeAQI.aqi > 300) {
+          aqiColor = '#6b21a8';
+          aqiStatus = 'Hazardous';
+        }
+
+        // Dark-themed AQI card
+        aqiHtml = `
+          <div style="background: rgba(2,6,23,0.88); border-radius: 12px; padding: 16px; margin-top: 12px; border: 1px solid rgba(255,255,255,0.06); color: #e6eef8;">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;gap:12px;">
+              <div style="flex:1">
+                <div style="font-size:11px;color:#94a3b8;font-weight:600;letter-spacing:0.6px;text-transform:uppercase;margin-bottom:6px;">Air Quality Index</div>
+                <div style="display:flex;align-items:baseline;gap:8px;">
+                  <span style="font-size:34px;font-weight:800;color:${aqiColor};line-height:1;">${realTimeAQI.aqi}</span>
+                  <span style="font-size:13px;color:#9fb0c8;font-weight:600;">${aqiStatus}</span>
+                </div>
+              </div>
+              <div style="width:44px;height:44px;border-radius:10px;background:rgba(255,255,255,0.02);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.03);">
+                <div style="width:22px;height:22px;border-radius:50%;background:${aqiColor};box-shadow:0 0 12px ${aqiColor}60;"></div>
+              </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-top:8px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.03);">
+              <div>
+                <div style="font-size:10px;color:#6b7b88;text-transform:uppercase;margin-bottom:4px;">PM2.5</div>
+                <div style="font-size:13px;font-weight:700;color:#e6eef8;">${realTimeAQI.components.pm25} <span style="font-size:11px;color:#7f95a6;font-weight:500">μg/m³</span></div>
+              </div>
+              <div>
+                <div style="font-size:10px;color:#6b7b88;text-transform:uppercase;margin-bottom:4px;">PM10</div>
+                <div style="font-size:13px;font-weight:700;color:#e6eef8;">${realTimeAQI.components.pm10} <span style="font-size:11px;color:#7f95a6;font-weight:500">μg/m³</span></div>
+              </div>
+              <div>
+                <div style="font-size:10px;color:#6b7b88;text-transform:uppercase;margin-bottom:4px;">NO₂</div>
+                <div style="font-size:13px;font-weight:700;color:#e6eef8;">${realTimeAQI.components.no2} <span style="font-size:11px;color:#7f95a6;font-weight:500">μg/m³</span></div>
+              </div>
+              <div>
+                <div style="font-size:10px;color:#6b7b88;text-transform:uppercase;margin-bottom:4px;">O₃</div>
+                <div style="font-size:13px;font-weight:700;color:#e6eef8;">${realTimeAQI.components.o3} <span style="font-size:11px;color:#7f95a6;font-weight:500">μg/m³</span></div>
+              </div>
+            </div>
+
+            <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.02);font-size:11px;color:#7f95a6;display:flex;align-items:center;gap:6px;">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" opacity="0.25"/><path d="M6 3v3l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.8"/></svg>
+              Updated ${realTimeAQI.timestamp}
+            </div>
+          </div>
+        `;
+      } else if (nearestAQI) {
+        let aqiColor = '#22c55e';
+        if (nearestAQI.value > 50 && nearestAQI.value <= 100) aqiColor = '#eab308';
+        else if (nearestAQI.value > 100 && nearestAQI.value <= 150) aqiColor = '#f97316';
+        else if (nearestAQI.value > 150 && nearestAQI.value <= 200) aqiColor = '#dc2626';
+        else if (nearestAQI.value > 200 && nearestAQI.value <= 300) aqiColor = '#9333ea';
+        else if (nearestAQI.value > 300) aqiColor = '#6b21a8';
+        
+        aqiHtml = `
+          <div style="background: rgba(2,6,23,0.88); border-radius:12px; padding:14px; margin-top:12px; border:1px solid rgba(255,255,255,0.06); color:#e6eef8;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <div style="flex:1">
+                <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;margin-bottom:6px;">Air Quality Index</div>
+                <div style="display:flex;align-items:baseline;gap:8px;"><span style="font-size:34px;font-weight:800;color:${aqiColor};">${nearestAQI.value}</span><span style="font-size:12px;color:#9fb0c8">Nearest (${nearestAQI.distance_m}m)</span></div>
+              </div>
+              <div style="width:42px;height:42px;border-radius:10px;background:rgba(255,255,255,0.02);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.03)">
+                <div style="width:20px;height:20px;border-radius:50%;background:${aqiColor};box-shadow:0 0 10px ${aqiColor}60;"></div>
+              </div>
+            </div>
+          </div>
+        `;
+      } else {
+        aqiHtml = `
+          <div style="background: rgba(15, 23, 42, 0.6); border-radius: 12px; padding: 20px; margin-top: 16px; border: 1px solid rgba(255,255,255,0.1); text-align: center;">
+            <div style="color: #94a3b8; font-size: 13px; line-height: 1.5;">
+              ${OPENWEATHER_KEY ? 'AQI data not available for this location' : 'Set VITE_OPENWEATHER_API_KEY for real-time AQI'}
+            </div>
+          </div>
+        `;
+      }
+
       if (popupRef.current && mapRef.current) {
         popupRef.current
           .setLngLat(e.lngLat)
-          .setHTML(`<b>Impact simulated for ${y}</b>`)
+          .setHTML(`
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 0; margin: 0;">
+              <div style="padding: 20px 20px 16px 20px; border-bottom: 1px solid rgba(255,255,255,0.1);">
+                <div style="font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px;">Location</div>
+                <div style="font-size: 12px; color: #94a3b8; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
+              </div>
+              ${aqiHtml}
+            </div>
+          `)
           .addTo(mapRef.current);
       }
     };
@@ -369,6 +726,93 @@ export default function MapView() {
   useEffect(() => {
     yearRef.current = year;
   }, [year]);
+
+  /* ================= REFRESH AQI DATA PERIODICALLY ================= */
+  useEffect(() => {
+    if (!mapRef.current || !OPENWEATHER_KEY || !layers.aqi) return;
+
+    const refreshAQIData = async () => {
+      const fetchAllCitiesAQI = async () => {
+        try {
+          const aqiPromises = MAJOR_INDIAN_CITIES.map(async (city) => {
+            try {
+              const response = await fetch(
+                `https://api.openweathermap.org/data/2.5/air_pollution?lat=${city.lat}&lon=${city.lng}&appid=${OPENWEATHER_KEY}`
+              );
+
+              if (!response.ok) return null;
+
+              const data = await response.json();
+               
+              if (data && data.list && data.list.length > 0) {
+                const aqi = data.list[0].main.aqi;
+                const components = data.list[0].components;
+                const pm25 = components.pm2_5 || 0;
+                
+                let usAQI = 0;
+                if (pm25 > 0) {
+                  if (pm25 <= 12) usAQI = Math.round((pm25 / 12) * 50);
+                  else if (pm25 <= 35.4) usAQI = Math.round(50 + ((pm25 - 12) / 23.4) * 50);
+                  else if (pm25 <= 55.4) usAQI = Math.round(100 + ((pm25 - 35.4) / 20) * 50);
+                  else if (pm25 <= 150.4) usAQI = Math.round(150 + ((pm25 - 55.4) / 95) * 100);
+                  else if (pm25 <= 250.4) usAQI = Math.round(250 + ((pm25 - 150.4) / 100) * 100);
+                  else usAQI = Math.round(350 + ((pm25 - 250.4) / 149.6) * 150);
+                  usAQI = Math.min(500, Math.max(0, usAQI));
+                } else {
+                  const aqiMap = { 1: 50, 2: 100, 3: 150, 4: 200, 5: 300 };
+                  usAQI = aqiMap[aqi] || 100;
+                }
+
+                return {
+                  type: "Feature",
+                  properties: {
+                    aqi: usAQI,
+                    city: city.name,
+                    level: aqi,
+                    pm25: Math.round(pm25 * 10) / 10,
+                    pm10: Math.round((components.pm10 || 0) * 10) / 10
+                  },
+                  geometry: {
+                    type: "Point",
+                    coordinates: [city.lng, city.lat]
+                  }
+                };
+              }
+              return null;
+            } catch (err) {
+              return null;
+            }
+          });
+
+          const results = await Promise.all(aqiPromises);
+          const features = results.filter(f => f !== null);
+          
+          return {
+            type: "FeatureCollection",
+            features: features
+          };
+        } catch (err) {
+          console.error("Error refreshing AQI data:", err);
+          return null;
+        }
+      };
+
+      const aqiData = await fetchAllCitiesAQI();
+      if (aqiData && aqiData.features.length > 0 && mapRef.current) {
+        const aqiSource = mapRef.current.getSource("aqi");
+        if (aqiSource) {
+          aqiSource.setData(aqiData);
+          setAqiGeo(aqiData);
+        }
+      }
+    };
+
+    // Refresh immediately and then every 5 minutes (300000 ms)
+    refreshAQIData();
+    const interval = setInterval(refreshAQIData, 300000);
+
+    return () => clearInterval(interval);
+  }, [layers.aqi]);
 
   /* ================= FLOOD DEPTH ANIMATION ================= */
   useEffect(() => {
@@ -530,10 +974,52 @@ export default function MapView() {
         }, 300);
       }
 
+      // Re-add AQI layer if we have cached geo data
+      if (aqiGeo) {
+        setTimeout(() => {
+          try {
+            if (!map.getSource("aqi")) {
+              map.addSource("aqi", { type: "geojson", data: aqiGeo });
+              map.addLayer({
+                id: "aqi-layer",
+                type: "circle",
+                source: "aqi",
+                paint: {
+                  "circle-radius": 12,
+                  "circle-opacity": 0.9,
+                  "circle-stroke-width": 2,
+                  "circle-stroke-color": "#ffffff",
+                  "circle-stroke-opacity": 0.8,
+                  "circle-color": [
+                    "interpolate",
+                    ["linear"],
+                    ["get", "aqi"],
+                    0, "#22c55e",
+                    50, "#22c55e",
+                    100, "#eab308",
+                    150, "#f97316",
+                    200, "#dc2626",
+                    300, "#9333ea",
+                    400, "#6b21a8"
+                  ]
+                },
+                layout: {
+                  visibility: layers.aqi ? "visible" : "none"
+                }
+              });
+            } else {
+              map.setLayoutProperty("aqi-layer", "visibility", layers.aqi ? "visible" : "none");
+            }
+          } catch (err) {
+            console.error("Error re-adding AQI layer:", err);
+          }
+        }, 300);
+      }
+
       // Re-add other custom layers if needed
       // Note: AQI, flood layers would need to be re-added here if needed
     });
-  }, [mapStyle, loading, layers.traffic]);
+  }, [mapStyle, loading, layers.traffic, layers.aqi, aqiGeo]);
 
   /* ================= LAYER TOGGLES ================= */
   useEffect(() => {
@@ -1195,15 +1681,17 @@ export default function MapView() {
         </button>
       </div>
 
-      <EconomicPanel data={impactData} />
+      <EconomicPanel data={impactData} analysis={urbanAnalysis} analysisLoading={analysisLoading} />
       <CitySuggestions map={mapRef.current} visible={showSuggestions} />
 
       <div
         ref={mapContainer}
         style={{
-          width: "100vw",
-          height: "100vh",
-          position: "relative"
+          width: "100%",
+          height: "100%",
+          position: "fixed",
+          top: 0,
+          left: 0
         }}
       />
     </>

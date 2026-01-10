@@ -1,4 +1,4 @@
-export default function EconomicPanel({ data }) {
+export default function EconomicPanel({ data, analysis, analysisLoading }) {
   if (!data) return null;
 
   return (
@@ -29,6 +29,18 @@ export default function EconomicPanel({ data }) {
       <p style={{ fontSize: 12, opacity: 0.7 }}>
         AI-estimated using pollution, traffic & flood exposure
       </p>
+
+      {/* Gemini AI Analysis */}
+      {analysisLoading ? (
+        <p style={{ marginTop: 8, fontSize: 13, opacity: 0.9 }}>Analyzing with Gemini...</p>
+      ) : (
+        analysis && (
+          <div style={{ marginTop: 8, fontSize: 13, lineHeight: 1.4, opacity: 0.95 }}>
+            <strong>Gemini Analysis:</strong>
+            <p style={{ margin: '6px 0 0' }}>{analysis}</p>
+          </div>
+        )
+      )}
     </div>
   );
 }

@@ -12,3 +12,12 @@ html, body, #root {
   font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
   overflow: hidden;
 }
+
+/* Hide scrollbars globally */
+html, body {
+  -ms-overflow-style: none; /* IE and Edge */
+  scrollbar-width: none; /* Firefox */
+}
+html::-webkit-scrollbar, body::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
