@@ -1,26 +1,51 @@
-export function calculateImpact({
-  population,
-  income,
-  aqiOn,
-  floodOn,
-  trafficOn
+// Simple explainable economic impact model
+
+export function calculateEconomicImpact({
+  aqi,
+  flood,
+  traffic,
+  populationDensity,
+  year
 }) {
-  let impactFactor = 0;
+  const yearFactor = (year - 2025) / 15;
 
-  if (aqiOn) impactFactor += 0.12;
-  if (floodOn) impactFactor += 0.18;
-  if (trafficOn) impactFactor += 0.08;
+  const factors = {
+    aqi: aqi * 0.35,
+    flood: flood * 0.45,
+    traffic: traffic * 0.2
+  };
 
-  const peopleAffected = Math.round(population * impactFactor);
+  // ✅ FIXED LINE
+  const totalFactor =
+    factors.aqi +
+    factors.flood +
+    factors.traffic;
 
-  const economicLoss =
-    Math.round(
-      peopleAffected * income * 0.015
-    );
+  const peopleAffected = Math.round(
+    800 +
+    populationDensity * 0.02 +
+    totalFactor * 12000 +
+    yearFactor * 1500
+  );
+
+  const economicLoss = Math.round(
+    peopleAffected * 0.0028 +
+    flood * 40 +
+    traffic * 18
+  );
+
+  const risk =
+    economicLoss > 120
+      ? "Severe 🔴"
+      : economicLoss > 70
+      ? "High 🟠"
+      : economicLoss > 35
+      ? "Moderate 🟡"
+      : "Low 🟢";
 
   return {
-    impactFactor,
-    peopleAffected,
-    economicLoss
+    people: peopleAffected,
+    loss: economicLoss,
+    risk
   };
 }
