@@ -58,6 +58,12 @@ export default function MapView() {
     floodDepth: false
   });
 
+  const [cameraState, setCameraState] = useState({
+    bearing: MAP_CONFIG.bearing,
+    pitch: MAP_CONFIG.pitch
+  });
+
+
   /* ================= MAP INIT ================= */
   useEffect(() => {
     if (mapRef.current) return;
@@ -474,6 +480,121 @@ export default function MapView() {
     });
   }, []);
 
+  /* ================= MOUSE CAMERA CONTROLS ================= */
+  // Intercept right-click drag for custom rotation/tilt control
+  useEffect(() => {
+    if (!mapRef.current || !mapContainer.current) return;
+    
+    const map = mapRef.current;
+    const container = mapContainer.current;
+    let isRightClickDragging = false;
+    let startPos = { x: 0, y: 0, bearing: 0, pitch: 0 };
+
+    const handleRightMouseDown = (e) => {
+      if (e.button === 2) { // Right mouse button
+        e.preventDefault();
+        isRightClickDragging = true;
+        startPos = {
+          x: e.clientX,
+          y: e.clientY,
+          bearing: map.getBearing(),
+          pitch: map.getPitch()
+        };
+        container.style.cursor = 'grabbing';
+        
+        // Disable MapLibre's default right-click rotation
+        map.dragRotate.disable();
+      }
+    };
+
+    const handleMouseMove = (e) => {
+      if (isRightClickDragging) {
+        e.preventDefault();
+        const deltaX = e.clientX - startPos.x;
+        const deltaY = e.clientY - startPos.y;
+
+        // Left/Right movement = Rotation (Bearing)
+        const bearingSensitivity = 0.5;
+        const newBearing = startPos.bearing + (deltaX * bearingSensitivity);
+
+        // Up/Down movement = Tilt (Pitch)
+        const pitchSensitivity = 0.3;
+        const newPitch = Math.max(0, Math.min(85, startPos.pitch - (deltaY * pitchSensitivity)));
+
+        map.easeTo({
+          bearing: newBearing,
+          pitch: newPitch,
+          duration: 0
+        });
+
+        setCameraState({
+          bearing: newBearing,
+          pitch: newPitch
+        });
+      }
+    };
+
+    const handleMouseUp = (e) => {
+      if (isRightClickDragging && e.button === 2) {
+        e.preventDefault();
+        isRightClickDragging = false;
+        container.style.cursor = '';
+        // Re-enable MapLibre's default controls
+        map.dragRotate.enable();
+      }
+    };
+
+    container.addEventListener('mousedown', handleRightMouseDown);
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    container.addEventListener('contextmenu', (e) => e.preventDefault()); // Prevent context menu
+
+    return () => {
+      container.removeEventListener('mousedown', handleRightMouseDown);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      map.dragRotate.enable(); // Re-enable on cleanup
+    };
+  }, []);
+
+
+  const resetCamera = useCallback(() => {
+    if (!mapRef.current) return;
+    mapRef.current.flyTo({
+      center: MAP_CONFIG.center,
+      zoom: MAP_CONFIG.zoom,
+      pitch: MAP_CONFIG.pitch,
+      bearing: MAP_CONFIG.bearing,
+      speed: 0.8,
+      curve: 1.5
+    });
+    setCameraState({
+      bearing: MAP_CONFIG.bearing,
+      pitch: MAP_CONFIG.pitch
+    });
+  }, []);
+
+  // Update camera state when map moves (for display purposes)
+  useEffect(() => {
+    if (!mapRef.current) return;
+    const map = mapRef.current;
+
+    const updateCameraState = () => {
+      setCameraState({
+        bearing: Math.round(map.getBearing()),
+        pitch: Math.round(map.getPitch())
+      });
+    };
+
+    map.on("rotate", updateCameraState);
+    map.on("pitch", updateCameraState);
+
+    return () => {
+      map.off("rotate", updateCameraState);
+      map.off("pitch", updateCameraState);
+    };
+  }, []);
+
   const startCityFlyThrough = useCallback(() => {
     if (!mapRef.current) return;
 
@@ -550,7 +671,7 @@ export default function MapView() {
         <div
           style={{
             position: "absolute",
-            top: 20,
+            top: 280,
             right: 20,
             zIndex: 1000,
             background: "rgba(220, 38, 38, 0.95)",
@@ -582,6 +703,34 @@ export default function MapView() {
 
       <LayerToggle layers={layers} setLayers={setLayers} />
       <TimeSlider year={year} setYear={setYear} />
+
+      {/* Camera Controls Info - Mouse Instructions */}
+      <div
+        style={{
+          position: "absolute",
+          top: 20,
+          right: 20,
+          zIndex: 10,
+          background: "rgba(2, 6, 23, 0.85)",
+          padding: "12px 16px",
+          borderRadius: 8,
+          backdropFilter: "blur(8px)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+          color: "#fff",
+          fontSize: 12,
+          lineHeight: 1.5,
+          maxWidth: 200
+        }}
+      >
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>🖱️ Mouse Controls</div>
+        <div style={{ opacity: 0.9 }}>
+          <div>Right-click + Drag</div>
+          <div style={{ marginTop: 4, fontSize: 11, opacity: 0.8 }}>
+            Left/Right = Rotate<br />
+            Up/Down = Tilt
+          </div>
+        </div>
+      </div>
 
       {/* Control Buttons */}
       <div
