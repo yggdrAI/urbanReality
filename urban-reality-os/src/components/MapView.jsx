@@ -32,6 +32,9 @@ const IMPACT_MODEL = {
   basePopulation: 28000,
   populationGrowth: 6000
 };
+// Use environment variable if available, otherwise use placeholder
+// For production, set VITE_TOMTOM_API_KEY in your .env file
+const TOMTOM_KEY = import.meta.env.VITE_TOMTOM_API_KEY || "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw";
 
 export default function MapView() {
   const mapContainer = useRef(null);
@@ -194,37 +197,43 @@ export default function MapView() {
           });
         }
 
-        /* ===== TRAFFIC ===== */
+        /* ===== TRAFFIC (TomTom API) ===== */
         try {
-          const trafficResponse = await fetch("/data/traffic.json");
-          if (!trafficResponse.ok) throw new Error("Failed to load traffic data");
-          const trafficData = await trafficResponse.json();
-          
-          if (isMounted) {
-            map.addSource("traffic", { type: "geojson", data: trafficData });
+          if (isMounted && TOMTOM_KEY && TOMTOM_KEY !== "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw") {
+            // Add TomTom Traffic Flow Source
+            map.addSource("traffic", {
+              type: "raster",
+              // style=relative shows speed relative to free-flow (Green/Orange/Red)
+              // style=absolute shows absolute speed
+              tiles: [
+                `https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.png?key=${TOMTOM_KEY}`
+              ],
+              tileSize: 256
+            });
+
+            // Add Raster Layer
+            // We use the ID "traffic-layer" so your existing LayerToggle works automatically
             map.addLayer({
               id: "traffic-layer",
-              type: "heatmap",
+              type: "raster",
               source: "traffic",
               paint: {
-                "heatmap-weight": ["get", "congestion"],
-                "heatmap-radius": 30,
-                "heatmap-intensity": 1,
-                "heatmap-color": [
-                  "interpolate",
-                  ["linear"],
-                  ["heatmap-density"],
-                  0, "rgba(0,0,0,0)",
-                  0.3, "#22c55e",
-                  0.6, "#facc15",
-                  1, "#dc2626"
-                ]
+                "raster-opacity": 1.0,
+                "raster-fade-duration": 300
+              },
+              layout: {
+                visibility: layers.traffic ? "visible" : "none" // Respect initial state
               }
             });
+          } else if (TOMTOM_KEY === "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw") {
+            console.warn("Please replace the placeholder with your actual TomTom API Key.");
+            if (isMounted) {
+              setError("TomTom API key not configured. Please add your API key to enable traffic data.");
+            }
           }
         } catch (err) {
           console.error("Error loading traffic data:", err);
-          if (isMounted) setError("Failed to load traffic data");
+          if (isMounted) setError("Failed to load traffic data from TomTom API");
         }
 
         /* ===== 3D BUILDINGS ===== */
@@ -255,24 +264,61 @@ export default function MapView() {
     };
 
     /* ===== AI IMPACT MODEL ===== */
-    const handleMapClick = (e) => {
+    const handleMapClick = async (e) => {
       if (!mapRef.current) return;
 
+      const { lng, lat } = e.lngLat;
       const y = yearRef.current;
+      
+      // Calculate time factor for future projections
       const yearsElapsed = y - MIN_YEAR;
       const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
 
+      // 1. Fetch Real Traffic Data for this point
+      let currentTrafficFactor = IMPACT_MODEL.baseTraffic; 
+      
+      try {
+        if (TOMTOM_KEY && TOMTOM_KEY !== "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw") {
+          const response = await fetch(
+            `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${TOMTOM_KEY}&point=${lat},${lng}`
+          );
+          
+          if (response.ok) {
+            const data = await response.json();
+            
+            // Calculate congestion ratio: (Current Speed / Free Flow Speed)
+            // Lower ratio = Higher Traffic. Inverting for "Traffic Impact" (0 to 1 scale)
+            if (data.flowSegmentData) {
+              const { currentSpeed, freeFlowSpeed } = data.flowSegmentData;
+              if (freeFlowSpeed > 0) {
+                const congestion = 1 - (currentSpeed / freeFlowSpeed);
+                // Clamp between 0 and 1
+                currentTrafficFactor = Math.max(0, Math.min(1, congestion));
+              }
+            }
+          }
+        } else {
+          console.warn("TomTom API key not configured. Using base traffic model for calculations.");
+        }
+      } catch (err) {
+        console.warn("Could not fetch real-time traffic, falling back to model", err);
+      }
+
+      // 2. Mix Real Data with Future Projections
+      // We combine real traffic (currentTrafficFactor) with your time-based growth
+      const projectedTraffic = currentTrafficFactor + (0.5 * timeFactor); // Traffic gets worse over time
+
       const AQI = IMPACT_MODEL.baseAQI + (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI) * timeFactor;
       const FloodRisk = IMPACT_MODEL.baseFloodRisk + (IMPACT_MODEL.maxFloodRisk - IMPACT_MODEL.baseFloodRisk) * timeFactor;
-      const Traffic = IMPACT_MODEL.baseTraffic + (IMPACT_MODEL.maxTraffic - IMPACT_MODEL.baseTraffic) * timeFactor;
       const Pop = IMPACT_MODEL.basePopulation + IMPACT_MODEL.populationGrowth * timeFactor;
 
+      // Update calculation to use 'projectedTraffic' instead of the static 'Traffic' constant
       const people = Math.round(
-        800 + 110 * AQI + 12000 * FloodRisk + 9000 * Traffic + 0.03 * Pop
+        800 + 110 * AQI + 12000 * FloodRisk + 9000 * projectedTraffic + 0.03 * Pop
       );
 
       const loss = Math.round(
-        0.0028 * people + 35 * FloodRisk + 18 * Traffic
+        0.0028 * people + 35 * FloodRisk + 18 * projectedTraffic
       );
 
       setImpactData({
