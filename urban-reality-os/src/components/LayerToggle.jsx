@@ -1,3 +1,10 @@
+const LAYER_LABELS = {
+  aqi: "AQI",
+  flood: "Flood Zones",
+  traffic: "Traffic",
+  floodDepth: "Flood Depth"
+};
+
 export default function LayerToggle({ layers, setLayers }) {
   return (
     <div
@@ -5,19 +12,29 @@ export default function LayerToggle({ layers, setLayers }) {
         position: "absolute",
         top: 20,
         left: 20,
-        background: "#020617",
+        background: "rgba(2, 6, 23, 0.9)",
         padding: 12,
         borderRadius: 8,
         color: "white",
         fontSize: 14,
-        zIndex: 10
+        zIndex: 10,
+        backdropFilter: "blur(8px)",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+        minWidth: 160
       }}
     >
-      <strong>Layers</strong>
+      <strong style={{ display: "block", marginBottom: 8 }}>Layers</strong>
 
       {Object.keys(layers).map((key) => (
-        <div key={key} style={{ marginTop: 8 }}>
-          <label>
+        <div key={key} style={{ marginTop: 6 }}>
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              cursor: "pointer",
+              userSelect: "none"
+            }}
+          >
             <input
               type="checkbox"
               checked={layers[key]}
@@ -27,8 +44,9 @@ export default function LayerToggle({ layers, setLayers }) {
                   [key]: !prev[key]
                 }))
               }
-            />{" "}
-            {key.toUpperCase()}
+              style={{ marginRight: 8, cursor: "pointer" }}
+            />
+            <span>{LAYER_LABELS[key] || key.toUpperCase()}</span>
           </label>
         </div>
       ))}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
@@ -7,190 +7,315 @@ import EconomicPanel from "./EconomicPanel";
 import CitySuggestions from "./CitySuggestions";
 import TimeSlider from "./TimeSlider";
 
+// Constants
+const INITIAL_YEAR = 2025;
+const MIN_YEAR = 2025;
+const MAX_YEAR = 2040;
+const MAP_CONFIG = {
+  center: [77.209, 28.6139],
+  zoom: 12,
+  pitch: 60,
+  bearing: -20
+};
+const FLOOD_ANIMATION_CONFIG = {
+  depthIncrement: 0.02,
+  resetDepth: 0,
+  baseDepthMultiplier: 0.4
+};
+const IMPACT_MODEL = {
+  baseAQI: 90,
+  maxAQI: 200,
+  baseFloodRisk: 0.25,
+  maxFloodRisk: 0.85,
+  baseTraffic: 0.35,
+  maxTraffic: 0.85,
+  basePopulation: 28000,
+  populationGrowth: 6000
+};
+
 export default function MapView() {
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
-  const popupRef = useRef(
-    new maplibregl.Popup({ closeButton: false, offset: 12 })
-  );
-  const yearRef = useRef(2025);
+  const popupRef = useRef(null);
+  const yearRef = useRef(INITIAL_YEAR);
   const floodAnimRef = useRef(null);
+  const floodDepthRef = useRef(0);
+  const flyThroughTimeoutsRef = useRef([]);
 
-  const [year, setYear] = useState(2025);
+  const [year, setYear] = useState(INITIAL_YEAR);
   const [impactData, setImpactData] = useState(null);
   const [showSuggestions, setShowSuggestions] = useState(true);
   const [floodMode, setFloodMode] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
   const [layers, setLayers] = useState({
     aqi: true,
     flood: true,
-    traffic: true
+    traffic: true,
+    floodDepth: false
   });
 
   /* ================= MAP INIT ================= */
   useEffect(() => {
     if (mapRef.current) return;
 
+    let isMounted = true;
+
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style:
         "https://api.maptiler.com/maps/hybrid/style.json?key=UQBNCVHquLf1PybiywBt",
-      center: [77.209, 28.6139],
-      zoom: 12,
-      pitch: 60,
-      bearing: -20,
+      center: MAP_CONFIG.center,
+      zoom: MAP_CONFIG.zoom,
+      pitch: MAP_CONFIG.pitch,
+      bearing: MAP_CONFIG.bearing,
       antialias: true
     });
 
     mapRef.current = map;
+    popupRef.current = new maplibregl.Popup({ 
+      closeButton: false, 
+      offset: 12,
+      closeOnClick: true 
+    });
+    
     map.addControl(new maplibregl.NavigationControl(), "top-right");
 
-    map.on("load", async () => {
-      /* ===== TERRAIN ===== */
-      map.addSource("terrain", {
-        type: "raster-dem",
-        url:
-          "https://api.maptiler.com/tiles/terrain-rgb/tiles.json?key=UQBNCVHquLf1PybiywBt",
-        tileSize: 256
-      });
+    const loadMapData = async () => {
+      try {
+        setLoading(true);
+        setError(null);
 
-      map.setTerrain({ source: "terrain", exaggeration: 1.4 });
+        await new Promise((resolve) => {
+          if (map.loaded()) {
+            resolve();
+          } else {
+            map.once("load", resolve);
+          }
+        });
 
-      /* ===== AQI ===== */
-      const aqiData = await fetch("/data/aqi.json").then(r => r.json());
-      map.addSource("aqi", { type: "geojson", data: aqiData });
+        if (!isMounted) return;
 
-      map.addLayer({
-        id: "aqi-layer",
-        type: "circle",
-        source: "aqi",
-        paint: {
-          "circle-radius": 8,
-          "circle-opacity": 0.85,
-          "circle-color": [
-            "interpolate",
-            ["linear"],
-            ["get", "aqi"],
-            50, "#22c55e",
-            100, "#eab308",
-            150, "#f97316",
-            200, "#dc2626"
-          ]
+        /* ===== TERRAIN ===== */
+        map.addSource("terrain", {
+          type: "raster-dem",
+          url:
+            "https://api.maptiler.com/tiles/terrain-rgb/tiles.json?key=UQBNCVHquLf1PybiywBt",
+          tileSize: 256
+        });
+
+        map.setTerrain({ source: "terrain", exaggeration: 1.4 });
+
+        /* ===== AQI ===== */
+        try {
+          const aqiResponse = await fetch("/data/aqi.json");
+          if (!aqiResponse.ok) throw new Error("Failed to load AQI data");
+          const aqiData = await aqiResponse.json();
+          
+          if (isMounted) {
+            map.addSource("aqi", { type: "geojson", data: aqiData });
+            map.addLayer({
+              id: "aqi-layer",
+              type: "circle",
+              source: "aqi",
+              paint: {
+                "circle-radius": 8,
+                "circle-opacity": 0.85,
+                "circle-color": [
+                  "interpolate",
+                  ["linear"],
+                  ["get", "aqi"],
+                  50, "#22c55e",
+                  100, "#eab308",
+                  150, "#f97316",
+                  200, "#dc2626"
+                ]
+              }
+            });
+          }
+        } catch (err) {
+          console.error("Error loading AQI data:", err);
+          if (isMounted) setError("Failed to load AQI data");
         }
-      });
 
-      /* ===== STATIC FLOOD (DATA) ===== */
-      const floodData = await fetch("/data/flood.json").then(r => r.json());
-      map.addSource("flood", { type: "geojson", data: floodData });
-
-      map.addLayer({
-        id: "flood-layer",
-        type: "fill",
-        source: "flood",
-        paint: {
-          "fill-color": "#2563eb",
-          "fill-opacity": 0.45
+        /* ===== STATIC FLOOD (DATA) ===== */
+        try {
+          const floodResponse = await fetch("/data/flood.json");
+          if (!floodResponse.ok) throw new Error("Failed to load flood data");
+          const floodData = await floodResponse.json();
+          
+          if (isMounted) {
+            map.addSource("flood", { type: "geojson", data: floodData });
+            map.addLayer({
+              id: "flood-layer",
+              type: "fill",
+              source: "flood",
+              paint: {
+                "fill-color": "#2563eb",
+                "fill-opacity": 0.45
+              }
+            });
+          }
+        } catch (err) {
+          console.error("Error loading flood data:", err);
+          if (isMounted) setError("Failed to load flood data");
         }
-      });
 
-      /* ===== FLOOD DEPTH (ANIMATED) ===== */
-      map.addSource("flood-depth", {
-        type: "geojson",
-        data: { type: "FeatureCollection", features: [] }
-      });
+        /* ===== FLOOD DEPTH (ANIMATED) ===== */
+        if (isMounted) {
+          map.addSource("flood-depth", {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] }
+          });
 
-      map.addLayer({
-        id: "flood-depth-layer",
-        type: "fill",
-        source: "flood-depth",
-        paint: {
-          "fill-color": [
-            "interpolate",
-            ["linear"],
-            ["get", "depth"],
-            0, "#bfdbfe",
-            1, "#60a5fa",
-            2, "#2563eb",
-            3, "#1e3a8a"
-          ],
-          "fill-opacity": [
-            "interpolate",
-            ["linear"],
-            ["get", "depth"],
-            0, 0.2,
-            3, 0.75
-          ]
+          map.addLayer({
+            id: "flood-depth-layer",
+            type: "fill",
+            source: "flood-depth",
+            paint: {
+              "fill-color": [
+                "interpolate",
+                ["linear"],
+                ["get", "depth"],
+                0, "#bfdbfe",
+                1, "#60a5fa",
+                2, "#2563eb",
+                3, "#1e3a8a"
+              ],
+              "fill-opacity": [
+                "interpolate",
+                ["linear"],
+                ["get", "depth"],
+                0, 0.2,
+                3, 0.75
+              ]
+            }
+          });
         }
-      });
 
-      /* ===== TRAFFIC ===== */
-      const trafficData = await fetch("/data/traffic.json").then(r => r.json());
-      map.addSource("traffic", { type: "geojson", data: trafficData });
-
-      map.addLayer({
-        id: "traffic-layer",
-        type: "heatmap",
-        source: "traffic",
-        paint: {
-          "heatmap-weight": ["get", "congestion"],
-          "heatmap-radius": 30,
-          "heatmap-intensity": 1,
-          "heatmap-color": [
-            "interpolate",
-            ["linear"],
-            ["heatmap-density"],
-            0, "rgba(0,0,0,0)",
-            0.3, "#22c55e",
-            0.6, "#facc15",
-            1, "#dc2626"
-          ]
+        /* ===== TRAFFIC ===== */
+        try {
+          const trafficResponse = await fetch("/data/traffic.json");
+          if (!trafficResponse.ok) throw new Error("Failed to load traffic data");
+          const trafficData = await trafficResponse.json();
+          
+          if (isMounted) {
+            map.addSource("traffic", { type: "geojson", data: trafficData });
+            map.addLayer({
+              id: "traffic-layer",
+              type: "heatmap",
+              source: "traffic",
+              paint: {
+                "heatmap-weight": ["get", "congestion"],
+                "heatmap-radius": 30,
+                "heatmap-intensity": 1,
+                "heatmap-color": [
+                  "interpolate",
+                  ["linear"],
+                  ["heatmap-density"],
+                  0, "rgba(0,0,0,0)",
+                  0.3, "#22c55e",
+                  0.6, "#facc15",
+                  1, "#dc2626"
+                ]
+              }
+            });
+          }
+        } catch (err) {
+          console.error("Error loading traffic data:", err);
+          if (isMounted) setError("Failed to load traffic data");
         }
-      });
 
-      /* ===== 3D BUILDINGS ===== */
-      map.addLayer({
-        id: "3d-buildings",
-        source: "openmaptiles",
-        "source-layer": "building",
-        type: "fill-extrusion",
-        minzoom: 14,
-        paint: {
-          "fill-extrusion-color": "#cbd5e1",
-          "fill-extrusion-height": ["get", "render_height"],
-          "fill-extrusion-base": ["get", "render_min_height"],
-          "fill-extrusion-opacity": 0.9
+        /* ===== 3D BUILDINGS ===== */
+        if (isMounted) {
+          map.addLayer({
+            id: "3d-buildings",
+            source: "openmaptiles",
+            "source-layer": "building",
+            type: "fill-extrusion",
+            minzoom: 14,
+            paint: {
+              "fill-extrusion-color": "#cbd5e1",
+              "fill-extrusion-height": ["get", "render_height"],
+              "fill-extrusion-base": ["get", "render_min_height"],
+              "fill-extrusion-opacity": 0.9
+            }
+          });
         }
-      });
-    });
+
+        if (isMounted) setLoading(false);
+      } catch (err) {
+        console.error("Error initializing map:", err);
+        if (isMounted) {
+          setError("Failed to initialize map. Please refresh the page.");
+          setLoading(false);
+        }
+      }
+    };
 
     /* ===== AI IMPACT MODEL ===== */
-    map.on("click", e => {
+    const handleMapClick = (e) => {
+      if (!mapRef.current) return;
+
       const y = yearRef.current;
-      const f = (y - 2025) / 15;
+      const yearsElapsed = y - MIN_YEAR;
+      const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
 
-      const AQI = 90 + 110 * f;
-      const FloodRisk = 0.25 + 0.6 * f;
-      const Traffic = 0.35 + 0.5 * f;
-      const Pop = 28000 + 6000 * f;
+      const AQI = IMPACT_MODEL.baseAQI + (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI) * timeFactor;
+      const FloodRisk = IMPACT_MODEL.baseFloodRisk + (IMPACT_MODEL.maxFloodRisk - IMPACT_MODEL.baseFloodRisk) * timeFactor;
+      const Traffic = IMPACT_MODEL.baseTraffic + (IMPACT_MODEL.maxTraffic - IMPACT_MODEL.baseTraffic) * timeFactor;
+      const Pop = IMPACT_MODEL.basePopulation + IMPACT_MODEL.populationGrowth * timeFactor;
 
-      const people =
-        800 + 110 * AQI + 12000 * FloodRisk + 9000 * Traffic + 0.03 * Pop;
+      const people = Math.round(
+        800 + 110 * AQI + 12000 * FloodRisk + 9000 * Traffic + 0.03 * Pop
+      );
 
-      const loss =
-        0.0028 * people + 35 * FloodRisk + 18 * Traffic;
+      const loss = Math.round(
+        0.0028 * people + 35 * FloodRisk + 18 * Traffic
+      );
 
       setImpactData({
         zone: `Delhi Urban Zone (${y})`,
-        people: Math.round(people),
-        loss: Math.round(loss),
-        risk: FloodRisk > 0.6 ? "Severe 🔴" : "Moderate 🟠"
+        people,
+        loss,
+        risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡"
       });
 
-      popupRef.current
-        .setLngLat(e.lngLat)
-        .setHTML(`<b>Impact simulated for ${y}</b>`)
-        .addTo(map);
-    });
+      if (popupRef.current && mapRef.current) {
+        popupRef.current
+          .setLngLat(e.lngLat)
+          .setHTML(`<b>Impact simulated for ${y}</b>`)
+          .addTo(mapRef.current);
+      }
+    };
+
+    map.on("click", handleMapClick);
+    loadMapData();
+
+    // Cleanup function
+    return () => {
+      isMounted = false;
+      
+      if (floodAnimRef.current) {
+        cancelAnimationFrame(floodAnimRef.current);
+        floodAnimRef.current = null;
+      }
+
+      flyThroughTimeoutsRef.current.forEach(clearTimeout);
+      flyThroughTimeoutsRef.current = [];
+
+      if (popupRef.current) {
+        popupRef.current.remove();
+        popupRef.current = null;
+      }
+
+      if (mapRef.current) {
+        map.off("click", handleMapClick);
+        map.remove();
+        mapRef.current = null;
+      }
+    };
   }, []);
 
   /* ================= YEAR SYNC ================= */
@@ -201,30 +326,50 @@ export default function MapView() {
   /* ================= FLOOD DEPTH ANIMATION ================= */
   useEffect(() => {
     if (!mapRef.current) return;
+    
     const map = mapRef.current;
+    const floodSource = map.getSource("flood-depth");
+    
+    if (!floodSource) return;
 
-    if (floodAnimRef.current) cancelAnimationFrame(floodAnimRef.current);
+    // Cancel any ongoing animation
+    if (floodAnimRef.current) {
+      cancelAnimationFrame(floodAnimRef.current);
+      floodAnimRef.current = null;
+    }
 
-    if (!floodMode) {
-      map.getSource("flood-depth")?.setData({
+    // Reset flood depth when disabled
+    if (!floodMode || !layers.floodDepth) {
+      floodDepthRef.current = FLOOD_ANIMATION_CONFIG.resetDepth;
+      floodSource.setData({
         type: "FeatureCollection",
         features: []
       });
       return;
     }
 
-    let depth = 0;
-    const maxDepth = 3 * ((year - 2025) / 15 + 0.4);
+    // Calculate max depth based on year
+    const yearsElapsed = year - MIN_YEAR;
+    const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
+    const maxDepth = 3 * (timeFactor + FLOOD_ANIMATION_CONFIG.baseDepthMultiplier);
+
+    // Reset depth when toggling on or year changes significantly
+    if (floodDepthRef.current >= maxDepth) {
+      floodDepthRef.current = FLOOD_ANIMATION_CONFIG.resetDepth;
+    }
 
     const animate = () => {
-      depth += 0.02;
+      if (!mapRef.current || !floodSource) return;
 
-      map.getSource("flood-depth").setData({
+      const currentDepth = floodDepthRef.current + FLOOD_ANIMATION_CONFIG.depthIncrement;
+      floodDepthRef.current = Math.min(currentDepth, maxDepth);
+
+      floodSource.setData({
         type: "FeatureCollection",
         features: [
           {
             type: "Feature",
-            properties: { depth },
+            properties: { depth: floodDepthRef.current },
             geometry: {
               type: "Polygon",
               coordinates: [[
@@ -239,13 +384,25 @@ export default function MapView() {
         ]
       });
 
-      if (depth < maxDepth) {
+      // Continue animation if not at max depth
+      if (floodDepthRef.current < maxDepth) {
         floodAnimRef.current = requestAnimationFrame(animate);
+      } else {
+        floodAnimRef.current = null;
       }
     };
 
-    animate();
-  }, [floodMode, year]);
+    // Start animation
+    floodAnimRef.current = requestAnimationFrame(animate);
+
+    // Cleanup on unmount or dependency change
+    return () => {
+      if (floodAnimRef.current) {
+        cancelAnimationFrame(floodAnimRef.current);
+        floodAnimRef.current = null;
+      }
+    };
+  }, [floodMode, year, layers.floodDepth]);
 
   /* ================= LAYER TOGGLES ================= */
   useEffect(() => {
@@ -261,10 +418,11 @@ export default function MapView() {
     toggle("aqi-layer", layers.aqi);
     toggle("flood-layer", layers.flood);
     toggle("traffic-layer", layers.traffic);
+    toggle("flood-depth-layer", layers.floodDepth);
   }, [layers]);
 
   /* ================= CINEMATIC CAMERA ================= */
-  const flyToPoint = (lng, lat, zoom = 14, pitch = 65, bearing = 0) => {
+  const flyToPoint = useCallback((lng, lat, zoom = 14, pitch = 65, bearing = 0) => {
     if (!mapRef.current) return;
 
     mapRef.current.flyTo({
@@ -276,10 +434,14 @@ export default function MapView() {
       curve: 1.8,
       essential: true
     });
-  };
+  }, []);
 
-  const startCityFlyThrough = () => {
+  const startCityFlyThrough = useCallback(() => {
     if (!mapRef.current) return;
+
+    // Clear any existing fly-through timeouts
+    flyThroughTimeoutsRef.current.forEach(clearTimeout);
+    flyThroughTimeoutsRef.current = [];
 
     const tour = [
       { lng: 77.2090, lat: 28.6139, zoom: 13, bearing: -20 },
@@ -290,62 +452,193 @@ export default function MapView() {
     ];
 
     let i = 0;
+
     const flyNext = () => {
-      if (i >= tour.length) return;
+      if (i >= tour.length || !mapRef.current) {
+        flyThroughTimeoutsRef.current = [];
+        return;
+      }
       const p = tour[i];
       flyToPoint(p.lng, p.lat, p.zoom, 65, p.bearing);
       i++;
-      setTimeout(flyNext, 4500);
+      const timeout = setTimeout(flyNext, 4500);
+      flyThroughTimeoutsRef.current.push(timeout);
     };
 
     flyNext();
-  };
+  }, [flyToPoint]);
+
+  const toggleFloodMode = useCallback(() => {
+    setFloodMode((prev) => {
+      const newFloodMode = !prev;
+      if (newFloodMode && !layers.floodDepth) {
+        // Enable flood depth layer when starting flood mode
+        setLayers((prevLayers) => ({ ...prevLayers, floodDepth: true }));
+      }
+      return newFloodMode;
+    });
+  }, [layers.floodDepth]);
 
   return (
     <>
+      {/* Loading Overlay */}
+      {loading && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: "rgba(2, 6, 23, 0.9)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            color: "#fff",
+            fontSize: 18,
+            backdropFilter: "blur(8px)"
+          }}
+        >
+          <div style={{ textAlign: "center" }}>
+            <div style={{ marginBottom: 12, fontSize: 32 }}>🗺️</div>
+            <div>Loading map data...</div>
+          </div>
+        </div>
+      )}
+
+      {/* Error Message */}
+      {error && (
+        <div
+          style={{
+            position: "absolute",
+            top: 20,
+            right: 20,
+            zIndex: 1000,
+            background: "rgba(220, 38, 38, 0.95)",
+            color: "#fff",
+            padding: "12px 18px",
+            borderRadius: 8,
+            maxWidth: 300,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+            backdropFilter: "blur(8px)"
+          }}
+        >
+          <strong>⚠️ Error:</strong> {error}
+          <button
+            onClick={() => setError(null)}
+            style={{
+              marginLeft: 12,
+              background: "rgba(255,255,255,0.2)",
+              border: "none",
+              color: "#fff",
+              padding: "4px 8px",
+              borderRadius: 4,
+              cursor: "pointer"
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <LayerToggle layers={layers} setLayers={setLayers} />
       <TimeSlider year={year} setYear={setYear} />
 
-      <button
-        onClick={() => setFloodMode(!floodMode)}
-        style={{
-          position: "absolute",
-          top: 20,
-          left: 480,
-          zIndex: 10,
-          padding: "8px 14px",
-          borderRadius: 8,
-          border: "none",
-          background: floodMode ? "#2563eb" : "#020617",
-          color: "#fff",
-          cursor: "pointer"
-        }}
-      >
-        🌊 Flood Depth
-      </button>
-
-      <button
-        onClick={startCityFlyThrough}
+      {/* Control Buttons */}
+      <div
         style={{
           position: "absolute",
           top: 20,
           left: 320,
           zIndex: 10,
-          padding: "8px 14px",
-          borderRadius: 8,
-          border: "none",
-          background: "#020617",
-          color: "#fff",
-          cursor: "pointer"
+          display: "flex",
+          gap: 10
         }}
       >
-        🎥 Fly Through City
-      </button>
+        <button
+          onClick={startCityFlyThrough}
+          disabled={loading || !mapRef.current}
+          style={{
+            padding: "10px 16px",
+            borderRadius: 8,
+            border: "none",
+            background: loading || !mapRef.current ? "#374151" : "#020617",
+            color: "#fff",
+            cursor: loading || !mapRef.current ? "not-allowed" : "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            transition: "all 0.2s",
+            opacity: loading || !mapRef.current ? 0.6 : 1
+          }}
+          onMouseEnter={(e) => {
+            if (!loading && mapRef.current) {
+              e.target.style.background = "#1e293b";
+              e.target.style.transform = "translateY(-1px)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!loading && mapRef.current) {
+              e.target.style.background = "#020617";
+              e.target.style.transform = "translateY(0)";
+            }
+          }}
+        >
+          🎥 Fly Through City
+        </button>
+
+        <button
+          onClick={toggleFloodMode}
+          disabled={loading || !mapRef.current}
+          style={{
+            padding: "10px 16px",
+            borderRadius: 8,
+            border: "none",
+            background:
+              floodMode && layers.floodDepth
+                ? "#2563eb"
+                : loading || !mapRef.current
+                ? "#374151"
+                : "#020617",
+            color: "#fff",
+            cursor: loading || !mapRef.current ? "not-allowed" : "pointer",
+            fontSize: 14,
+            fontWeight: 500,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+            transition: "all 0.2s",
+            opacity: loading || !mapRef.current ? 0.6 : 1
+          }}
+          onMouseEnter={(e) => {
+            if (!loading && mapRef.current) {
+              e.target.style.background =
+                floodMode && layers.floodDepth ? "#1d4ed8" : "#1e293b";
+              e.target.style.transform = "translateY(-1px)";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (!loading && mapRef.current) {
+              e.target.style.background =
+                floodMode && layers.floodDepth ? "#2563eb" : "#020617";
+              e.target.style.transform = "translateY(0)";
+            }
+          }}
+        >
+          🌊 {floodMode ? "Stop" : "Start"} Flood Animation
+        </button>
+      </div>
 
       <EconomicPanel data={impactData} />
       <CitySuggestions map={mapRef.current} visible={showSuggestions} />
 
-      <div ref={mapContainer} style={{ width: "100vw", height: "100vh" }} />
+      <div
+        ref={mapContainer}
+        style={{
+          width: "100vw",
+          height: "100vh",
+          position: "relative"
+        }}
+      />
     </>
   );
 }
