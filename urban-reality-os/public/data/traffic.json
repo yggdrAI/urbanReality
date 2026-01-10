@@ -1,0 +1,29 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "congestion": 0.9 },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.21, 28.62]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "congestion": 0.6 },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.18, 28.61]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "congestion": 0.3 },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.24, 28.59]
+      }
+    }
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": { "aqi": 180 },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.2090, 28.6139]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "aqi": 90 },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.1025, 28.7041]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": { "aqi": 130 },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [77.25, 28.55]
+      }
+    }
+  ]
+}
