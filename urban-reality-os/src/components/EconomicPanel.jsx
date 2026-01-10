@@ -1,48 +1,34 @@
-import { calculateImpact } from "../utils/economics";
-import EconomicImpact from "./EconomicImpact";
-
-export default function EconomicPanel({ layers, demographics }) {
-  // Defaults if data isn't loaded yet
-  const population = demographics?.population || 3000000;
-  const income = demographics?.per_capita_income || 200000;
-
-  const { peopleAffected, economicLoss, breakdown } = calculateImpact({
-    population,
-    income,
-    aqiOn: layers.aqi,
-    floodOn: layers.flood,
-    trafficOn: layers.traffic
-  });
+export default function EconomicPanel({ data }) {
+  if (!data) return null;
 
   return (
     <div
-      className="absolute bottom-5 left-5 bg-slate-900/90 text-white p-4 rounded-xl backdrop-blur-md border border-slate-700 shadow-2xl z-10 w-80"
-      style={{ fontFamily: "system-ui" }}
+      style={{
+        position: "absolute",
+        bottom: 24,
+        left: 24,
+        zIndex: 20,
+        background: "rgba(2,6,23,0.85)",
+        color: "#fff",
+        padding: 18,
+        borderRadius: 14,
+        width: 280,
+        backdropFilter: "blur(10px)",
+        boxShadow: "0 0 30px rgba(0,0,0,0.6)"
+      }}
     >
-      <h3 className="text-lg font-bold mb-3 flex items-center gap-2">
-        <span>📊</span> Economic Impact AI
+      <h3 style={{ marginTop: 0, fontSize: 16 }}>
+        🧠 AI Impact Analysis
       </h3>
 
-      <div className="space-y-3">
-        <div className="flex justify-between items-center">
-             <span className="text-gray-400 text-sm">People Affected</span>
-             <span className="text-xl font-bold text-orange-400">{peopleAffected.toLocaleString()}</span>
-        </div>
-        
-        <div className="flex justify-between items-center">
-             <span className="text-gray-400 text-sm">Daily Loss</span>
-             <span className="text-xl font-bold text-red-500">₹{economicLoss.toLocaleString()}</span>
-        </div>
+      <p><b>📍 Zone</b><br />{data.zone}</p>
+      <p><b>👥 People Affected</b><br />{data.people.toLocaleString()}</p>
+      <p><b>💰 Economic Loss</b><br />₹ {data.loss} Cr</p>
+      <p><b>⚠️ Risk Level</b><br />{data.risk}</p>
 
-        <div className="my-4 h-32 w-full">
-            {/* Visual breakdown using Recharts */}
-            <EconomicImpactQD data={breakdown} />
-        </div>
-
-        <p className="text-xs text-slate-400 italic text-center">
-          *Estimates based on active layers & city demographics
-        </p>
-      </div>
+      <p style={{ fontSize: 12, opacity: 0.7 }}>
+        AI-estimated using pollution, traffic & flood exposure
+      </p>
     </div>
   );
 }

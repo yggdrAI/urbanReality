@@ -1,51 +1,38 @@
-// Simple explainable economic impact model
+// src/utils/economics.js
 
-export function calculateEconomicImpact({
-  aqi,
-  flood,
-  traffic,
-  populationDensity,
-  year
-}) {
-  const yearFactor = (year - 2025) / 15;
-
+export function calculateImpact({
+  population = 3000000, // Default safe values
+  income = 200000,
+  aqiOn = false,
+  floodOn = false,
+  trafficOn = false
+} = {}) {
+  
+  // Impact factors (percentage of productivity lost)
   const factors = {
-    aqi: aqi * 0.35,
-    flood: flood * 0.45,
-    traffic: traffic * 0.2
+    aqi: aqiOn ? 0.12 : 0,
+    flood: floodOn ? 0.18 : 0,
+    traffic: trafficOn ? 0.08 : 0
   };
 
-  // ✅ FIXED LINE
-  const totalFactor =
-    factors.aqi +
-    factors.flood +
-    factors.traffic;
+  const totalFactor = factors.aqi + factors.flood + factors.traffic;
+  
+  // Daily income estimation (approximate)
+  const dailyIncome = income / 365;
 
-  const peopleAffected = Math.round(
-    800 +
-    populationDensity * 0.02 +
-    totalFactor * 12000 +
-    yearFactor * 1500
-  );
+  // Calculate detailed losses for the Chart
+  const breakdown = [
+    { name: "AQI", loss: Math.round(population * factors.aqi * dailyIncome) },
+    { name: "Flood", loss: Math.round(population * factors.flood * dailyIncome) },
+    { name: "Traffic", loss: Math.round(population * factors.traffic * dailyIncome) }
+  ];
 
-  const economicLoss = Math.round(
-    peopleAffected * 0.0028 +
-    flood * 40 +
-    traffic * 18
-  );
-
-  const risk =
-    economicLoss > 120
-      ? "Severe 🔴"
-      : economicLoss > 70
-      ? "High 🟠"
-      : economicLoss > 35
-      ? "Moderate 🟡"
-      : "Low 🟢";
+  const peopleAffected = Math.round(population * totalFactor);
+  const economicLoss = Math.round(peopleAffected * dailyIncome); // Daily loss
 
   return {
-    people: peopleAffected,
-    loss: economicLoss,
-    risk
+    peopleAffected,
+    economicLoss,
+    breakdown
   };
 }
