@@ -63,6 +63,9 @@ export default function MapView() {
     pitch: MAP_CONFIG.pitch
   });
 
+  const [mapStyle, setMapStyle] = useState("default"); // "default", "satellite", "terrain"
+  const [showLayersMenu, setShowLayersMenu] = useState(false);
+
 
   /* ================= MAP INIT ================= */
   useEffect(() => {
@@ -73,7 +76,7 @@ export default function MapView() {
     const map = new maplibregl.Map({
       container: mapContainer.current,
       style:
-        "https://api.maptiler.com/maps/hybrid/style.json?key=UQBNCVHquLf1PybiywBt",
+        "https://api.maptiler.com/maps/streets-v2/style.json?key=UQBNCVHquLf1PybiywBt",
       center: MAP_CONFIG.center,
       zoom: MAP_CONFIG.zoom,
       pitch: MAP_CONFIG.pitch,
@@ -217,7 +220,7 @@ export default function MapView() {
             });
 
             // Add Raster Layer
-            // We use the ID "traffic-layer" so your existing LayerToggle works automatically
+            // Traffic layer is controlled via the Google Maps-style layers menu
             map.addLayer({
               id: "traffic-layer",
               type: "raster",
@@ -448,9 +451,93 @@ export default function MapView() {
     };
   }, [floodMode, year, layers.floodDepth]);
 
+  /* ================= MAP STYLE SWITCHING ================= */
+  const styleRef = useRef(null);
+  const isInitialLoad = useRef(true);
+  
+  useEffect(() => {
+    if (!mapRef.current || loading) return;
+    const map = mapRef.current;
+
+    // On initial load, just set the ref and skip style change
+    if (isInitialLoad.current) {
+      styleRef.current = mapStyle;
+      isInitialLoad.current = false;
+      return;
+    }
+
+    // Don't switch if already on this style
+    if (styleRef.current === mapStyle) return;
+
+    const styleUrls = {
+      default: "https://api.maptiler.com/maps/streets-v2/style.json?key=UQBNCVHquLf1PybiywBt",
+      satellite: "https://api.maptiler.com/maps/hybrid/style.json?key=UQBNCVHquLf1PybiywBt",
+      terrain: "https://api.maptiler.com/maps/topo-v2/style.json?key=UQBNCVHquLf1PybiywBt"
+    };
+
+    const targetStyle = styleUrls[mapStyle];
+    if (!targetStyle) return;
+
+    styleRef.current = mapStyle;
+    map.setStyle(targetStyle);
+    
+    // Re-add layers after style change
+    map.once("style.load", () => {
+      // Re-add terrain if needed
+      if (mapStyle === "terrain" || mapStyle === "satellite") {
+        try {
+          map.addSource("terrain", {
+            type: "raster-dem",
+            url: "https://api.maptiler.com/tiles/terrain-rgb/tiles.json?key=UQBNCVHquLf1PybiywBt",
+            tileSize: 256
+          });
+          map.setTerrain({ source: "terrain", exaggeration: 1.4 });
+        } catch (err) {
+          console.error("Error adding terrain:", err);
+        }
+      }
+      
+      // Re-add traffic layer if enabled
+      if (layers.traffic && TOMTOM_KEY) {
+        setTimeout(() => {
+          try {
+            if (!map.getSource("traffic")) {
+              map.addSource("traffic", {
+                type: "raster",
+                tiles: [
+                  `https://api.tomtom.com/traffic/map/4/tile/flow/relative/{z}/{x}/{y}.png?key=${TOMTOM_KEY}`
+                ],
+                tileSize: 256
+              });
+              map.addLayer({
+                id: "traffic-layer",
+                type: "raster",
+                source: "traffic",
+                paint: {
+                  "raster-opacity": 1.0,
+                  "raster-fade-duration": 300
+                },
+                layout: {
+                  visibility: layers.traffic ? "visible" : "none"
+                }
+              });
+            } else {
+              map.setLayoutProperty("traffic-layer", "visibility", layers.traffic ? "visible" : "none");
+            }
+          } catch (err) {
+            console.error("Error re-adding traffic layer:", err);
+          }
+        }, 300);
+      }
+
+      // Re-add other custom layers if needed
+      // Note: AQI, flood layers would need to be re-added here if needed
+    });
+  }, [mapStyle, loading, layers.traffic]);
+
   /* ================= LAYER TOGGLES ================= */
   useEffect(() => {
-    if (!mapRef.current) return;
+    if (!mapRef.current || loading) return;
     const map = mapRef.current;
 
     const toggle = (id, visible) => {
@@ -463,7 +550,7 @@ export default function MapView() {
     toggle("flood-layer", layers.flood);
     toggle("traffic-layer", layers.traffic);
     toggle("flood-depth-layer", layers.floodDepth);
-  }, [layers]);
+  }, [layers, loading]);
 
   /* ================= CINEMATIC CAMERA ================= */
   const flyToPoint = useCallback((lng, lat, zoom = 14, pitch = 65, bearing = 0) => {
@@ -483,7 +570,7 @@ export default function MapView() {
   /* ================= MOUSE CAMERA CONTROLS ================= */
   // Intercept right-click drag for custom rotation/tilt control
   useEffect(() => {
-    if (!mapRef.current || !mapContainer.current) return;
+    if (!mapRef.current || !mapContainer.current || loading) return;
     
     const map = mapRef.current;
     const container = mapContainer.current;
@@ -493,6 +580,7 @@ export default function MapView() {
     const handleRightMouseDown = (e) => {
       if (e.button === 2) { // Right mouse button
         e.preventDefault();
+        e.stopPropagation();
         isRightClickDragging = true;
         startPos = {
           x: e.clientX,
@@ -502,13 +590,15 @@ export default function MapView() {
         };
         container.style.cursor = 'grabbing';
         
-        // Disable MapLibre's default right-click rotation
-        map.dragRotate.disable();
+        // Disable MapLibre's default right-click rotation if available
+        if (map.dragRotate && typeof map.dragRotate.disable === 'function') {
+          map.dragRotate.disable();
+        }
       }
     };
 
     const handleMouseMove = (e) => {
-      if (isRightClickDragging) {
+      if (isRightClickDragging && mapRef.current) {
         e.preventDefault();
         const deltaX = e.clientX - startPos.x;
         const deltaY = e.clientY - startPos.y;
@@ -521,7 +611,7 @@ export default function MapView() {
         const pitchSensitivity = 0.3;
         const newPitch = Math.max(0, Math.min(85, startPos.pitch - (deltaY * pitchSensitivity)));
 
-        map.easeTo({
+        mapRef.current.easeTo({
           bearing: newBearing,
           pitch: newPitch,
           duration: 0
@@ -537,10 +627,13 @@ export default function MapView() {
     const handleMouseUp = (e) => {
       if (isRightClickDragging && e.button === 2) {
         e.preventDefault();
+        e.stopPropagation();
         isRightClickDragging = false;
         container.style.cursor = '';
-        // Re-enable MapLibre's default controls
-        map.dragRotate.enable();
+        // Re-enable MapLibre's default controls if available
+        if (mapRef.current && mapRef.current.dragRotate && typeof mapRef.current.dragRotate.enable === 'function') {
+          mapRef.current.dragRotate.enable();
+        }
       }
     };
 
@@ -553,9 +646,11 @@ export default function MapView() {
       container.removeEventListener('mousedown', handleRightMouseDown);
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
-      map.dragRotate.enable(); // Re-enable on cleanup
+      if (mapRef.current && mapRef.current.dragRotate && typeof mapRef.current.dragRotate.enable === 'function') {
+        mapRef.current.dragRotate.enable();
+      }
     };
-  }, []);
+  }, [loading]);
 
 
   const resetCamera = useCallback(() => {
@@ -638,6 +733,17 @@ export default function MapView() {
     });
   }, [layers.floodDepth]);
 
+  // Close layers menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (showLayersMenu && !e.target.closest('[data-layers-menu]')) {
+        setShowLayersMenu(false);
+      }
+    };
+    document.addEventListener("click", handleClickOutside);
+    return () => document.removeEventListener("click", handleClickOutside);
+  }, [showLayersMenu]);
+
   return (
     <>
       {/* Loading Overlay */}
@@ -671,7 +777,7 @@ export default function MapView() {
         <div
           style={{
             position: "absolute",
-            top: 280,
+            top: 120,
             right: 20,
             zIndex: 1000,
             background: "rgba(220, 38, 38, 0.95)",
@@ -703,6 +809,280 @@ export default function MapView() {
 
       <LayerToggle layers={layers} setLayers={setLayers} />
       <TimeSlider year={year} setYear={setYear} />
+
+      {/* Google Maps-style Layers Menu - Bottom Left */}
+      <div
+        data-layers-menu
+        style={{
+          position: "absolute",
+          bottom: 20,
+          left: 20,
+          zIndex: 20,
+          display: "flex",
+          gap: 4,
+          background: "rgba(255, 255, 255, 0.95)",
+          padding: "4px",
+          borderRadius: 8,
+          boxShadow: "0 2px 6px rgba(0,0,0,0.15)",
+          backdropFilter: "blur(8px)"
+        }}
+      >
+        {/* Satellite Button with Preview */}
+        <button
+          onClick={() => {
+            setMapStyle(mapStyle === "satellite" ? "default" : "satellite");
+            setShowLayersMenu(false);
+          }}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 8,
+            border: "none",
+            background: mapStyle === "satellite" ? "#5f6368" : "#fff",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            position: "relative",
+            overflow: "hidden",
+            padding: 0,
+            transition: "all 0.2s"
+          }}
+          onMouseEnter={(e) => {
+            if (mapStyle !== "satellite") {
+              e.target.style.background = "#f5f5f5";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (mapStyle !== "satellite") {
+              e.target.style.background = "#fff";
+            }
+          }}
+        >
+          {/* Satellite Preview Thumbnail */}
+          <div
+            style={{
+              width: "100%",
+              height: "48px",
+              background: "linear-gradient(135deg, #8b7355 0%, #6b5842 25%, #4a3d2e 50%, #8b7355 75%, #a69075 100%)",
+              position: "relative",
+              overflow: "hidden"
+            }}
+          >
+            {/* Simulated satellite imagery pattern */}
+            <div style={{
+              position: "absolute",
+              width: "100%",
+              height: "100%",
+              background: `
+                repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.1) 2px, rgba(0,0,0,0.1) 4px),
+                repeating-linear-gradient(90deg, transparent, transparent 2px, rgba(0,0,0,0.1) 2px, rgba(0,0,0,0.1) 4px),
+                radial-gradient(circle at 30% 40%, rgba(100,150,100,0.3) 0%, transparent 40%),
+                radial-gradient(circle at 70% 60%, rgba(80,120,80,0.3) 0%, transparent 40%)
+              `
+            }} />
+            {/* Roads */}
+            <div style={{
+              position: "absolute",
+              top: "50%",
+              left: "20%",
+              width: "60%",
+              height: "2px",
+              background: "#d4a574",
+              transform: "rotate(15deg)"
+            }} />
+            <div style={{
+              position: "absolute",
+              top: "30%",
+              left: "10%",
+              width: "80%",
+              height: "2px",
+              background: "#d4a574",
+              transform: "rotate(-10deg)"
+            }} />
+          </div>
+          <span style={{
+            fontSize: 11,
+            color: mapStyle === "satellite" ? "#fff" : "#333",
+            marginTop: 2,
+            fontWeight: 500
+          }}>
+            Satellite
+          </span>
+        </button>
+
+        {/* Terrain Button */}
+        <button
+          onClick={() => {
+            setMapStyle(mapStyle === "terrain" ? "default" : "terrain");
+            setShowLayersMenu(false);
+          }}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 8,
+            border: "none",
+            background: mapStyle === "terrain" ? "#5f6368" : "#fff",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 0,
+            transition: "all 0.2s"
+          }}
+          onMouseEnter={(e) => {
+            if (mapStyle !== "terrain") {
+              e.target.style.background = "#f5f5f5";
+            }
+          }}
+          onMouseLeave={(e) => {
+            if (mapStyle !== "terrain") {
+              e.target.style.background = "#fff";
+            }
+          }}
+        >
+          <div style={{
+            width: "48px",
+            height: "48px",
+            background: "linear-gradient(135deg, #d4e8d4 0%, #c0d8c0 20%, #8bb08b 40%, #6b8f6b 60%, #4a6f4a 80%, #2a4f2a 100%)",
+            borderRadius: 4,
+            position: "relative",
+            overflow: "hidden"
+          }}>
+            {/* Contour lines */}
+            <svg width="48" height="48" style={{ position: "absolute", top: 0, left: 0 }}>
+              <path d="M 8 30 Q 16 20, 24 25 T 40 28" stroke="#5a7a5a" strokeWidth="1" fill="none" opacity="0.6" />
+              <path d="M 6 35 Q 14 28, 22 32 T 38 34" stroke="#5a7a5a" strokeWidth="1" fill="none" opacity="0.6" />
+              <path d="M 10 40 Q 18 35, 26 38 T 42 42" stroke="#5a7a5a" strokeWidth="1" fill="none" opacity="0.6" />
+            </svg>
+          </div>
+          <span style={{
+            fontSize: 11,
+            color: mapStyle === "terrain" ? "#fff" : "#333",
+            marginTop: 2,
+            fontWeight: 500
+          }}>
+            Terrain
+          </span>
+        </button>
+
+        {/* Traffic Button */}
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setLayers(prev => ({ ...prev, traffic: !prev.traffic }));
+              setShowLayersMenu(!showLayersMenu);
+            }}
+            style={{
+              width: 64,
+              height: 64,
+              borderRadius: 8,
+              border: layers.traffic ? "2px solid #1a73e8" : "none",
+              background: "#fff",
+              cursor: "pointer",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              padding: 0,
+              transition: "all 0.2s"
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.background = "#f5f5f5";
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.background = "#fff";
+            }}
+          >
+            <div style={{
+              width: "48px",
+              height: "48px",
+              background: "#f0f0f0",
+              borderRadius: 4,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              position: "relative"
+            }}>
+              {/* Traffic intersection icon */}
+              <svg width="36" height="36" viewBox="0 0 36 36" style={{ position: "absolute" }}>
+                {/* Road lines */}
+                <line x1="18" y1="0" x2="18" y2="36" stroke="#bbb" strokeWidth="3" />
+                <line x1="0" y1="18" x2="36" y2="18" stroke="#bbb" strokeWidth="3" />
+                {/* Traffic colors */}
+                <line x1="18" y1="0" x2="18" y2="14" stroke="#22c55e" strokeWidth="4" />
+                <line x1="18" y1="22" x2="18" y2="36" stroke="#eab308" strokeWidth="4" />
+                <line x1="0" y1="18" x2="14" y2="18" stroke="#dc2626" strokeWidth="4" />
+                <line x1="22" y1="18" x2="36" y2="18" stroke="#22c55e" strokeWidth="4" />
+              </svg>
+            </div>
+            <span style={{
+              fontSize: 11,
+              color: layers.traffic ? "#1a73e8" : "#333",
+              marginTop: 2,
+              fontWeight: 500
+            }}>
+              Traffic
+            </span>
+          </button>
+
+          {/* Traffic Color Legend Popup */}
+          {showLayersMenu && (
+            <div
+              data-layers-menu
+              style={{
+                position: "absolute",
+                bottom: "100%",
+                left: 0,
+                marginBottom: 8,
+                background: "#fff",
+                padding: "12px 16px",
+                borderRadius: 8,
+                boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                minWidth: 180,
+                zIndex: 1000
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10, color: "#202124" }}>
+                Live traffic
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 32,
+                    height: 4,
+                    background: "#22c55e",
+                    borderRadius: 2
+                  }} />
+                  <span style={{ fontSize: 12, color: "#5f6368" }}>Fast</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 32,
+                    height: 4,
+                    background: "#eab308",
+                    borderRadius: 2
+                  }} />
+                  <span style={{ fontSize: 12, color: "#5f6368" }}>Slow</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div style={{
+                    width: 32,
+                    height: 4,
+                    background: "#dc2626",
+                    borderRadius: 2
+                  }} />
+                  <span style={{ fontSize: 12, color: "#5f6368" }}>Congested</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
 
       {/* Camera Controls Info - Mouse Instructions */}
       <div

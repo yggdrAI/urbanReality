@@ -1,7 +1,6 @@
 const LAYER_LABELS = {
   aqi: "AQI",
   flood: "Flood Zones",
-  traffic: "Traffic",
   floodDepth: "Flood Depth"
 };
 
