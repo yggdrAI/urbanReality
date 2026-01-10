@@ -32,9 +32,8 @@ const IMPACT_MODEL = {
   basePopulation: 28000,
   populationGrowth: 6000
 };
-// Use environment variable if available, otherwise use placeholder
-// For production, set VITE_TOMTOM_API_KEY in your .env file
-const TOMTOM_KEY = import.meta.env.VITE_TOMTOM_API_KEY || "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw";
+// Use environment variable - set VITE_TOMTOM_API_KEY in your .env file
+const TOMTOM_KEY = import.meta.env.VITE_TOMTOM_API_KEY;
 
 export default function MapView() {
   const mapContainer = useRef(null);
@@ -199,7 +198,7 @@ export default function MapView() {
 
         /* ===== TRAFFIC (TomTom API) ===== */
         try {
-          if (isMounted && TOMTOM_KEY && TOMTOM_KEY !== "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw") {
+          if (isMounted && TOMTOM_KEY) {
             // Add TomTom Traffic Flow Source
             map.addSource("traffic", {
               type: "raster",
@@ -225,11 +224,6 @@ export default function MapView() {
                 visibility: layers.traffic ? "visible" : "none" // Respect initial state
               }
             });
-          } else if (TOMTOM_KEY === "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw") {
-            console.warn("Please replace the placeholder with your actual TomTom API Key.");
-            if (isMounted) {
-              setError("TomTom API key not configured. Please add your API key to enable traffic data.");
-            }
           }
         } catch (err) {
           console.error("Error loading traffic data:", err);
@@ -278,7 +272,7 @@ export default function MapView() {
       let currentTrafficFactor = IMPACT_MODEL.baseTraffic; 
       
       try {
-        if (TOMTOM_KEY && TOMTOM_KEY !== "1pbgkiYxEOapIewVHZW4Ogb58raCcPBw") {
+        if (TOMTOM_KEY) {
           const response = await fetch(
             `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${TOMTOM_KEY}&point=${lat},${lng}`
           );
@@ -297,8 +291,6 @@ export default function MapView() {
               }
             }
           }
-        } else {
-          console.warn("TomTom API key not configured. Using base traffic model for calculations.");
         }
       } catch (err) {
         console.warn("Could not fetch real-time traffic, falling back to model", err);
