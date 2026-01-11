@@ -75,6 +75,7 @@ const MAJOR_INDIAN_CITIES = [
 ];
 
 export default function MapView() {
+  console.log("MapView mounted");
   const mapContainer = useRef(null);
   const mapRef = useRef(null);
   const popupRef = useRef(null);
@@ -2088,12 +2089,14 @@ export default function MapView() {
 
       <div
         ref={mapContainer}
+        id="map"
         style={{
-          width: "100%",
-          height: "100%",
+          width: "100vw",
+          height: "100vh",
           position: "fixed",
           top: 0,
-          left: 0
+          left: 0,
+          zIndex: 0
         }}
       />
     </>

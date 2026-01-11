@@ -3,19 +3,56 @@ import { GoogleLogin } from "@react-oauth/google";
 import { useAuth } from "../context/AuthContext";
 
 export default function AuthModal() {
-  const { login } = useAuth();
+  const { login, setUser } = useAuth();
+  const API = "http://localhost:5000";
   const [isLogin, setIsLogin] = useState(true);
   const [form, setForm] = useState({ name: "", email: "", password: "" });
 
   const submit = async () => {
-    const url = isLogin ? "/api/auth/login" : "/api/auth/signup";
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form)
-    });
-    const data = await res.json();
-    if (data.token) login(data.token);
+    const url = isLogin ? `${API}/api/auth/login` : `${API}/api/auth/signup`;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form)
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        console.error("Auth failed:", data);
+        alert(data.msg || data.message || "Auth failed");
+        return;
+      }
+      if (data.token) login(data.token);
+      if (data.user) setUser(data.user);
+    } catch (err) {
+      console.error("Auth error:", err);
+    }
+  };
+
+  const handleGoogleSuccess = async (credentialResponse) => {
+    try {
+      const res = await fetch(`${API}/api/auth/google`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ token: credentialResponse.credential }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        console.error("Google auth failed:", data);
+        alert(data.message || data.msg || "Google login failed");
+        return;
+      }
+
+      // Save token via login and set user
+      if (data.token) login(data.token);
+      if (data.user) setUser(data.user);
+    } catch (err) {
+      console.error("Google auth error:", err);
+    }
   };
 
   return (
@@ -46,15 +83,8 @@ export default function AuthModal() {
         </button>
 
         <GoogleLogin
-          onSuccess={async res => {
-            const r = await fetch("/api/auth/google", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ token: res.credential })
-            });
-            const data = await r.json();
-            login(data.token);
-          }}
+          onSuccess={handleGoogleSuccess}
+          onError={() => console.log("Google Login Failed")}
         />
 
         <p
