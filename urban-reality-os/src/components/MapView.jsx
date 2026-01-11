@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
-import { createRoot } from 'react-dom/client';
+import { createRoot } from "react-dom/client";
+
 
 import MapMenu from "./MapMenu";
 import LayerToggle from "./LayerToggle";
@@ -11,7 +12,6 @@ import TimeSlider from "./TimeSlider";
 import SearchBar from "./SearchBar";
 import { getUrbanAnalysis } from "../utils/gemini";
 import { fetchIndiaMacroData } from "../utils/worldBank";
-import { calculatePopulationDynamics } from "../utils/demographics";
 import { calculateImpactModel } from "../utils/impactModel";
 import { fetchRealtimeAQI } from "../utils/aqi";
 import LocationPopup from "./LocationPopup";
@@ -82,6 +82,8 @@ export default function MapView() {
     const mapRef = useRef(null);
     const popupRef = useRef(null);
     const popupRootRef = useRef(null);
+    const popupSessionRef = useRef(0);
+    const lastRequestTimeRef = useRef(0);
     const yearRef = useRef(INITIAL_YEAR);
     const floodAnimRef = useRef(null);
     const floodDepthRef = useRef(0);
@@ -122,6 +124,22 @@ export default function MapView() {
 
     // Sync macroData to ref for usage in callbacks
     useEffect(() => { macroDataRef.current = macroData; }, [macroData]);
+
+    // Load saved locations markers only when map is ready
+    useEffect(() => {
+        if (!mapRef.current || loading) return;
+
+        try {
+            const savedLocations = JSON.parse(localStorage.getItem('savedLocations') || '[]');
+            savedLocations.forEach(loc => {
+                new maplibregl.Marker({ color: '#f97316' })
+                    .setLngLat([loc.lng, loc.lat])
+                    .addTo(mapRef.current);
+            });
+        } catch (e) {
+            console.warn('Could not load saved locations', e);
+        }
+    }, [loading]);
 
     // Recalculate projections when the selected location or year changes
     useEffect(() => {
@@ -186,7 +204,7 @@ export default function MapView() {
 
         // If popup root is mounted, re-render it with updated impact
         try {
-            if (popupRootRef.current) {
+            if (popupRootRef.current && popupRef.current?.isOpen() && activeLocation?.sessionId === popupSessionRef.current) {
                 popupRootRef.current.render(
                     <LocationPopup
                         placeName={aPlace}
@@ -207,7 +225,7 @@ export default function MapView() {
                     />
                 );
             }
-        } catch (e) { /* ignore render errors */ }
+        } catch (e) { console.warn("Popup render skipped (Year Change):", e); }
 
     }, [year, activeLocation]);
 
@@ -233,8 +251,22 @@ export default function MapView() {
             className: 'custom-popup',
             closeButton: false,
             offset: 12,
-            closeOnClick: true
+            closeOnClick: false
         });
+
+        // Setup persistent popup close listener
+        const handlePopupClose = () => {
+            try {
+                if (popupRootRef.current) {
+                    popupRootRef.current.unmount();
+                    popupRootRef.current = null;
+                }
+            } catch (e) {
+                console.warn("Popup unmount failed:", e);
+            }
+        };
+
+        popupRef.current.on("close", handlePopupClose);
 
         map.addControl(new maplibregl.NavigationControl(), "top-right");
 
@@ -307,6 +339,37 @@ export default function MapView() {
                         setLoadingAQI(false);
                     }
                 };
+
+                /* ===== AQI LAYER INIT ===== */
+                const aqiData = await fetchAllCitiesAQI();
+                if (aqiData && isMounted) {
+                    map.addSource("aqi", { type: "geojson", data: aqiData });
+                    map.addLayer({
+                        id: "aqi-layer",
+                        type: "circle",
+                        source: "aqi",
+                        paint: {
+                            "circle-radius": 12,
+                            "circle-opacity": 0.9,
+                            "circle-stroke-width": 2,
+                            "circle-stroke-color": "#ffffff",
+                            "circle-stroke-opacity": 0.8,
+                            "circle-color": [
+                                "interpolate",
+                                ["linear"],
+                                ["get", "aqi"],
+                                0, "#22c55e",
+                                50, "#22c55e",
+                                100, "#eab308",
+                                150, "#f97316",
+                                200, "#dc2626",
+                                300, "#9333ea",
+                                400, "#6b21a8"
+                            ]
+                        }
+                    });
+                    setAqiGeo(aqiData);
+                }
 
                 /* ===== STATIC FLOOD (DATA) ===== */
                 try {
@@ -522,23 +585,57 @@ export default function MapView() {
             const y = yearRef.current;
             const macroData = macroDataRef.current;
 
-            // Show loading popup immediately at clicked location
+            // Start a new popup session
+            const sessionId = ++popupSessionRef.current;
+
+            // Track request time to prevent race conditions
+            const requestTime = Date.now();
+            lastRequestTimeRef.current = requestTime;
+
+            // Show loading popup immediately at clicked location (React only)
             if (popupRef.current && mapRef.current) {
-                popupRef.current
-                    .setLngLat([lng, lat])
-                    .setHTML(`
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 20px; text-align: center;">
-              <div style="display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.06); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px;"></div>
-              <div style="font-size: 13px; color: #94a3b8; font-weight: 500;">Analyzing Location...</div>
-            </div>
-            <style>
-              @keyframes spin { to { transform: rotate(360deg); } }
-            </style>
-          `)
-                    .addTo(mapRef.current);
+                // Clean up any previous root
+                try { if (popupRootRef.current) { popupRootRef.current.unmount(); popupRootRef.current = null; } } catch (e) { console.warn("Root cleanup warning:", e); }
+
+                const container = document.createElement('div');
+                container.className = 'custom-popup';
+
+                // Attach popup to map using DOM container
+                popupRef.current.setLngLat([lng, lat]).setDOMContent(container).addTo(mapRef.current);
+
+                // Create React root and render Loading State
+                const root = createRoot(container);
+                popupRootRef.current = root;
+
+                root.render(
+                    <LocationPopup
+                        placeName="Analyzing Location..."
+                        lat={lat}
+                        lng={lng}
+                        year={y}
+                        baseYear={BASE_YEAR}
+                        realTimeAQI={null}
+                        finalAQI={null}
+                        rainfall={0}
+                        rainProbability={null}
+                        macroData={null}
+                        impact={null}
+                        analysis={null}
+                        analysisLoading={true} // Triggers loading skeleton/spinner
+                        openWeatherKey={OPENWEATHER_KEY}
+                        onSave={null}
+                    />
+                );
+
+                // Unmount the root when popup closes - REMOVED (Handled by global listener)
             }
 
             try {
+                // Set initial loading state with session ID
+                setActiveLocation({ lat, lng, isInitialLoading: true, sessionId: sessionId });
+                setAnalysisLoading(true);
+                setUrbanAnalysis(null);
+
                 // Parallel Data Fetching
                 const [placeName, realTimeAQI, rainData, trafficJson] = await Promise.all([
                     // Place Name
@@ -674,205 +771,55 @@ export default function MapView() {
                             baseRainfall: rainfall,
                             baseTraffic: currentTrafficFactor,
                             baseFloodRisk: FloodRisk,
-                            worldBank: macroData
+                            worldBank: macroData,
+                            sessionId: sessionId
                         });
-                    } catch (e) { /* ignore */ }
+                    } catch (e) { console.warn("Active location update warning:", e); }
                 } catch (err) {
                     console.warn('Demographics calc failed:', err);
                 }
 
-                // 5. Build Popup Content
+                // HMTL String generation removed (dead code)
 
-                // Rainfall HTML
-                const rainHtml = `
-            <div style="
-              margin-top: 10px;
-              padding-top: 10px;
-              border-top: 1px solid rgba(255,255,255,0.04);
-              display: grid;
-              grid-template-columns: 1fr 1fr;
-              gap: 10px;
-              font-size: 12px;
-              color: #cbd5f5;
-            ">
-              <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 8px 10px; display:flex; align-items:center; gap:8px;">
-                🌧 <span>Rainfall</span>
-                <b style="margin-left:auto;color:#60a5fa">${rainfall.toFixed(1)} mm</b>
-              </div>
-              <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 8px 10px; display:flex; align-items:center; gap:8px;">
-                ☔ <span>Probability</span>
-                <b style="margin-left:auto;color:#38bdf8">${rainProbability}%</b>
-              </div>
-            </div>
-          `;
-
-                // World Bank HTML
-                let worldBankHtml = "";
-                if (macroData && macroData.population && macroData.urbanPct && macroData.gdpPerCapita) {
-                    const povertyVal = macroData.poverty?.value ?? macroData.povertyDDAY?.value ?? null;
-                    worldBankHtml = `
-            <div style="
-              margin-top: 12px;
-              padding-top: 10px;
-              border-top: 1px solid rgba(255,255,255,0.04);
-              font-size: 11px;
-              color: #94a3b8;
-              display: grid;
-              grid-template-columns: 1fr 1fr;
-              gap: 8px;
-            ">
-              <div>Population: <b style="color:#cbd5f5">${(macroData.population.value / 1e6).toFixed(1)}M</b></div>
-              <div>Urban: <b style="color:#cbd5f5">${macroData.urbanPct.value.toFixed(1)}%</b></div>
-              <div>GDP/capita: <b style="color:#cbd5f5">$${Math.round(macroData.gdpPerCapita.value)}</b></div>
-              <div>Poverty: <b style="color:#cbd5f5">${povertyVal !== null ? povertyVal.toFixed(1) + "%" : "—"}</b></div>
-            </div>
-          `;
-                }
-
-                // AQI HTML
-                let aqiHtml = '';
-                // Helper for AQI color
-                const getAqiColor = (val) => {
-                    if (val <= 50) return '#22c55e';
-                    if (val <= 100) return '#eab308';
-                    if (val <= 150) return '#f97316';
-                    if (val <= 200) return '#dc2626';
-                    if (val <= 300) return '#9333ea';
-                    return '#6b21a8';
-                };
-                const getAqiStatus = (val) => {
-                    if (val <= 50) return 'Good';
-                    if (val <= 100) return 'Moderate';
-                    if (val <= 150) return 'Unhealthy (Sens.)';
-                    if (val <= 200) return 'Unhealthy';
-                    if (val <= 300) return 'Very Unhealthy';
-                    return 'Hazardous';
-                };
-
-                if (realTimeAQI) {
-                    const color = getAqiColor(realTimeAQI.aqi);
-                    const status = getAqiStatus(realTimeAQI.aqi);
-
-                                // Compact AQI card
-                                aqiHtml = `
-                        <div style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 6px 16px rgba(0,0,0,0.45); border-radius: 10px; padding: 8px; margin: 6px; border: 1px solid rgba(255,255,255,0.06); backdrop-filter: blur(8px); color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 260px; box-sizing: border-box; word-wrap: break-word;">
-                            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px;">
-                                <div style="flex:1;min-width:0;">
-                                    <div style="font-size:10px;color:#94a3b8;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:4px;">Air Quality</div>
-                                    <div style="display:flex;align-items:baseline;gap:8px;">
-                                        <span style="font-size:18px;font-weight:800;color:${color};line-height:1;white-space:nowrap;">${realTimeAQI.aqi}</span>
-                                        <span style="font-size:12px;color:#cbd5e1;font-weight:600;white-space:nowrap;">${status}</span>
-                                    </div>
-                                </div>
-                                <div style="width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.06);flex-shrink:0;">
-                                    <div style="width:14px;height:14px;border-radius:50%;background:${color};box-shadow:0 0 8px ${color}60;"></div>
-                                </div>
-                            </div>
-
-                            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
-                                <div style="flex:1;min-width:0;">
-                                    <div style="font-size:10px;color:#64748b;margin-bottom:4px;font-weight:600;">PM2.5</div>
-                                    <div style="font-size:12px;font-weight:700;color:#e2e8f0;">${realTimeAQI.components.pm25} <span style="font-size:10px;color:#94a3b8;font-weight:500">μg/m³</span></div>
-                                </div>
-                                <div style="flex:1;min-width:0;">
-                                    <div style="font-size:10px;color:#64748b;margin-bottom:4px;font-weight:600;">PM10</div>
-                                    <div style="font-size:12px;font-weight:700;color:#e2e8f0;">${realTimeAQI.components.pm10} <span style="font-size:10px;color:#94a3b8;font-weight:500">μg/m³</span></div>
-                                </div>
-                            </div>
-
-                            <div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.04);padding-top:8px;display:flex;justify-content:space-between;align-items:center;">
-                                <div style="font-size:11px;color:#94a3b8;">Updated ${realTimeAQI.timestamp}</div>
-                                <div style="font-size:11px;color:#94a3b8;">${status}</div>
-                            </div>
-                            ${rainHtml}
-                            ${worldBankHtml}
-                        </div>
-                    `;
-                } else {
-                    // Fallback if no real-time AQI
-                    let nearestMsg = '';
-                    let nearestVal = null;
-                    let aqiColor = '#94a3b8';
-
-                    if (aqiGeo && aqiGeo.features && aqiGeo.features.length) {
-                        let bestDist = Infinity;
-                        for (const f of aqiGeo.features) {
-                            const [fx, fy] = f.geometry.coordinates;
-                            const d = (lat - fy) * (lat - fy) + (lng - fx) * (lng - fx);
-                                if (d < bestDist) { bestDist = d; nearestVal = f.properties.aqi; }
-                        }
-                        if (nearestVal) {
-                            aqiColor = getAqiColor(nearestVal);
-                            nearestMsg = `
-                <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
-                   <div style="font-size:9px; color:#94a3b8; font-weight:700; text-transform:uppercase;">Approx. AQI</div>
-                   <div style="font-size:20px; font-weight:800; color:${aqiColor};">${nearestVal}</div>
-                </div>`;
-                        }
+                // 6. Update popup with fetched data
+                if (popupRef.current && mapRef.current) {
+                    // Re-render existing React root
+                    if (popupRootRef.current && popupRef.current.isOpen() && sessionId === popupSessionRef.current) {
+                        try {
+                            popupRootRef.current.render(
+                                <LocationPopup
+                                    placeName={placeName}
+                                    lat={lat}
+                                    lng={lng}
+                                    year={y}
+                                    baseYear={BASE_YEAR}
+                                    realTimeAQI={realTimeAQI}
+                                    finalAQI={finalAQI}
+                                    rainfall={rainfall}
+                                    rainProbability={rainProbability}
+                                    macroData={macroData}
+                                    impact={impact}
+                                    analysis={urbanAnalysis}
+                                    analysisLoading={analysisLoading}
+                                    openWeatherKey={OPENWEATHER_KEY}
+                                    onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                                />
+                            );
+                        } catch (e) { console.warn("Popup data render error:", e); }
                     }
-
-                                        aqiHtml = `
-                        <div style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 6px 16px rgba(0,0,0,0.45); border-radius: 10px; padding: 8px; margin: 6px; border: 1px solid rgba(255,255,255,0.06); text-align: center; backdrop-filter: blur(8px); max-width: 240px;">
-                            <div style="color: #94a3b8; font-size: 11px; line-height: 1.4; font-weight: 500;">
-                                ${OPENWEATHER_KEY ? 'Real-time AQI unavailable' : 'Set API Key for AQI'}
-                            </div>
-                            ${nearestMsg}
-                            ${rainHtml}
-                            ${worldBankHtml}
-                        </div>
-                    `;
                 }
-
-                                // 6. Render popup via React component (LocationPopup)
-                                if (popupRef.current && mapRef.current) {
-                                        // Clean up any previous root
-                                        try { if (popupRootRef.current) { popupRootRef.current.unmount(); popupRootRef.current = null; } } catch (e) { /* ignore */ }
-
-                                        const container = document.createElement('div');
-                                        container.className = 'custom-popup';
-
-                                        // Attach popup to map using DOM container
-                                        popupRef.current.setLngLat([lng, lat]).setDOMContent(container).addTo(mapRef.current);
-
-                                        // Create React root and render LocationPopup
-                                        const root = createRoot(container);
-                                        popupRootRef.current = root;
-                                        root.render(
-                                                <LocationPopup
-                                                        placeName={placeName}
-                                                        lat={lat}
-                                                        lng={lng}
-                                                        year={y}
-                                                        baseYear={BASE_YEAR}
-                                                        realTimeAQI={realTimeAQI}
-                                                        finalAQI={finalAQI}
-                                                        rainfall={rainfall}
-                                                        rainProbability={rainProbability}
-                                                        macroData={macroData}
-                                                        impact={impact}
-                                                        analysis={urbanAnalysis}
-                                                        analysisLoading={analysisLoading}
-                                                        openWeatherKey={OPENWEATHER_KEY}
-                                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
-                                                />
-                                        );
-
-                                        // Unmount the root when popup closes
-                                        try {
-                                                popupRef.current.on('close', () => {
-                                                        try { if (popupRootRef.current) { popupRootRef.current.unmount(); popupRootRef.current = null; } } catch (e) {}
-                                                });
-                                        } catch (e) { /* ignore if not supported */ }
-                                }
 
                 // 7. Trigger AI Analysis (Background)
                 (async () => {
                     try {
+                        if (popupSessionRef.current !== sessionId) return;
+
                         setAnalysisLoading(true);
                         setUrbanAnalysis(null);
                         // show loading state in popup if already mounted
+                        /* AI Analysis Loading State - Render in existing root */
                         try {
-                            if (popupRootRef.current) {
+                            if (popupRootRef.current && popupRef.current?.isOpen() && popupSessionRef.current === sessionId) {
                                 popupRootRef.current.render(
                                     <LocationPopup
                                         placeName={placeName}
@@ -893,7 +840,7 @@ export default function MapView() {
                                     />
                                 );
                             }
-                        } catch (e) { /* ignore */ }
+                        } catch (e) { console.warn("AI loading render skipped:", e); }
 
                         // Build sanitized payload for AI (explain-only)
                         const aiPayload = {
@@ -910,69 +857,110 @@ export default function MapView() {
 
                         // Fetch analysis with sanitized payload
                         const analysis = await getUrbanAnalysis(aiPayload);
-                        setUrbanAnalysis(analysis || "No analysis available.");
 
-                        // NOTE: Gemini provides explanatory analysis only. Do not overwrite deterministic loss here.
-                        // Re-render popup React root (if present) with new analysis
-                        try {
-                            if (popupRootRef.current) {
-                                popupRootRef.current.render(
-                                    <LocationPopup
-                                        placeName={placeName}
-                                        lat={lat}
-                                        lng={lng}
-                                        year={y}
-                                        baseYear={BASE_YEAR}
-                                        realTimeAQI={realTimeAQI}
-                                        finalAQI={finalAQI}
-                                        rainfall={rainfall}
-                                        rainProbability={rainProbability}
-                                        macroData={macroData}
-                                        impact={impact}
-                                        analysis={analysis || 'No analysis available.'}
-                                        analysisLoading={false}
-                                        openWeatherKey={OPENWEATHER_KEY}
-                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
-                                    />
-                                );
-                            }
-                        } catch (e) { /* ignore render errors */ }
+                        // Guard completion update
+                        if (popupSessionRef.current !== sessionId) return;
 
+                        // Race condition check: only update if this is still the latest request
+                        if (lastRequestTimeRef.current === requestTime) {
+                            setUrbanAnalysis(analysis || "No analysis available.");
+
+                            // NOTE: Gemini provides explanatory analysis only. Do not overwrite deterministic loss here.
+                            // Re-render popup React root (if present) with new analysis
+                            try {
+                                if (
+                                    popupRootRef.current &&
+                                    popupRef.current?.isOpen() &&
+                                    popupSessionRef.current === sessionId &&
+                                    document.body.contains(popupRef.current.getElement())
+                                ) {
+                                    popupRootRef.current.render(
+                                        <LocationPopup
+                                            placeName={placeName}
+                                            lat={lat}
+                                            lng={lng}
+                                            year={y}
+                                            baseYear={BASE_YEAR}
+                                            realTimeAQI={realTimeAQI}
+                                            finalAQI={finalAQI}
+                                            rainfall={rainfall}
+                                            rainProbability={rainProbability}
+                                            macroData={macroData}
+                                            impact={impact}
+                                            analysis={analysis || 'No analysis available.'}
+                                            analysisLoading={false}
+                                            openWeatherKey={OPENWEATHER_KEY}
+                                            onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                                        />
+                                    );
+                                }
+                            } catch (e) { console.warn("AI result render error:", e); }
+                        }
                     } catch (err) {
-                        console.error("AI Analysis Failed", err);
-                        setUrbanAnalysis('Analysis unavailable');
-                        try {
-                            if (popupRootRef.current) {
-                                popupRootRef.current.render(
-                                    <LocationPopup
-                                        placeName={placeName}
-                                        lat={lat}
-                                        lng={lng}
-                                        year={y}
-                                        baseYear={BASE_YEAR}
-                                        realTimeAQI={realTimeAQI}
-                                        finalAQI={finalAQI}
-                                        rainfall={rainfall}
-                                        rainProbability={rainProbability}
-                                        macroData={macroData}
-                                        impact={impact}
-                                        analysis={'Analysis unavailable'}
-                                        analysisLoading={false}
-                                        openWeatherKey={OPENWEATHER_KEY}
-                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
-                                    />
-                                );
-                            }
-                        } catch (e) { /* ignore */ }
+                        if (lastRequestTimeRef.current === requestTime && popupSessionRef.current === sessionId) {
+                            console.error("AI Analysis Failed", err);
+                            setUrbanAnalysis('Analysis unavailable');
+                            try {
+                                if (popupRootRef.current && popupRef.current?.isOpen() && popupSessionRef.current === sessionId) {
+                                    popupRootRef.current.render(
+                                        <LocationPopup
+                                            placeName={placeName}
+                                            lat={lat}
+                                            lng={lng}
+                                            year={y}
+                                            baseYear={BASE_YEAR}
+                                            realTimeAQI={realTimeAQI}
+                                            finalAQI={finalAQI}
+                                            rainfall={rainfall}
+                                            rainProbability={rainProbability}
+                                            macroData={macroData}
+                                            impact={impact}
+                                            analysis={'Analysis unavailable'}
+                                            analysisLoading={false}
+                                            openWeatherKey={OPENWEATHER_KEY}
+                                            onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                                        />
+                                    );
+                                }
+                            } catch (e) { console.warn("AI error render skipped:", e); }
+                        }
                     } finally {
-                        setAnalysisLoading(false);
+                        if (lastRequestTimeRef.current === requestTime && popupSessionRef.current === sessionId) {
+                            setAnalysisLoading(false);
+                        }
                     }
                 })();
 
             } catch (fatalError) {
                 console.error("Fatal error in handleMapClick:", fatalError);
-                if (popupRef.current) {
-                    popupRef.current.setHTML(`<div style="padding:15px; color:#f87171; text-align:center;">Error loading details.</div>`);
+                try {
+                    if (
+                        popupRootRef.current &&
+                        popupRef.current?.isOpen() &&
+                        popupSessionRef.current === sessionId
+                    ) {
+                        popupRootRef.current.render(
+                            <LocationPopup
+                                placeName="Error"
+                                lat={lat}
+                                lng={lng}
+                                year={y}
+                                baseYear={BASE_YEAR}
+                                realTimeAQI={null}
+                                finalAQI={null}
+                                rainfall={0}
+                                rainProbability={null}
+                                macroData={macroData}
+                                impact={null}
+                                analysis="Failed to load details"
+                                analysisLoading={false}
+                                openWeatherKey={OPENWEATHER_KEY}
+                                onSave={null}
+                            />
+                        );
+                    }
+                } catch (e) {
+                    console.warn("Error fallback render skipped:", e);
                 }
             }
         };
@@ -1055,37 +1043,37 @@ export default function MapView() {
         if (!mapRef.current || !OPENWEATHER_KEY || !layers.aqi) return;
 
         const refreshAQIData = async () => {
-                const fetchAllCitiesAQI = async () => {
-                    try {
-                        const aqiPromises = MAJOR_INDIAN_CITIES.map(async (city) => {
-                            try {
-                                const r = await fetchRealtimeAQI(city.lat, city.lng, OPENWEATHER_KEY);
-                                if (!r) return null;
-                                return {
-                                    type: "Feature",
-                                    properties: {
-                                        aqi: r.aqi,
-                                        city: city.name,
-                                        level: r.category || null,
-                                        pm25: r.components?.pm25 ?? null,
-                                        pm10: r.components?.pm10 ?? null
-                                    },
-                                    geometry: { type: "Point", coordinates: [city.lng, city.lat] }
-                                };
-                            } catch (err) {
-                                return null;
-                            }
-                        });
+            const fetchAllCitiesAQI = async () => {
+                try {
+                    const aqiPromises = MAJOR_INDIAN_CITIES.map(async (city) => {
+                        try {
+                            const r = await fetchRealtimeAQI(city.lat, city.lng, OPENWEATHER_KEY);
+                            if (!r) return null;
+                            return {
+                                type: "Feature",
+                                properties: {
+                                    aqi: r.aqi,
+                                    city: city.name,
+                                    level: r.category || null,
+                                    pm25: r.components?.pm25 ?? null,
+                                    pm10: r.components?.pm10 ?? null
+                                },
+                                geometry: { type: "Point", coordinates: [city.lng, city.lat] }
+                            };
+                        } catch (err) {
+                            return null;
+                        }
+                    });
 
-                        const results = await Promise.all(aqiPromises);
-                        const features = results.filter(f => f !== null);
+                    const results = await Promise.all(aqiPromises);
+                    const features = results.filter(f => f !== null);
 
-                        return { type: "FeatureCollection", features };
-                    } catch (err) {
-                        console.error("Error refreshing AQI data:", err);
-                        return null;
-                    }
-                };
+                    return { type: "FeatureCollection", features };
+                } catch (err) {
+                    console.error("Error refreshing AQI data:", err);
+                    return null;
+                }
+            };
 
             const aqiData = await fetchAllCitiesAQI();
             if (aqiData && aqiData.features.length > 0 && mapRef.current) {
@@ -1350,30 +1338,46 @@ export default function MapView() {
 
     /* ================= HANDLE LOCATION SEARCH ================= */
     const handleLocationSelect = useCallback((lng, lat, placeName) => {
-        if (!mapRef.current) return;
+        if (!mapRef.current || !popupRef.current) return;
 
-        // Fly to the selected location
-        flyToPoint(lng, lat, 14, 65, mapRef.current.getBearing());
+        const sessionId = ++popupSessionRef.current;
 
-        // Optional: Create a marker or popup at the location
-        if (popupRef.current) {
-            popupRef.current
-                .setLngLat([lng, lat])
-                .setHTML(`
-          <div style="
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto;
-            padding: 12px;
-            color: #202124;
-          ">
-            <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">
-              ${placeName}
-            </div>
-            <div style="font-size: 12px; color: #5f6368;">
-              ${lat.toFixed(4)}, ${lng.toFixed(4)}
-            </div>
-          </div>
-        `)
-                .addTo(mapRef.current);
+        try {
+            // Clean up any previous root
+            if (popupRootRef.current) {
+                popupRootRef.current.unmount();
+                popupRootRef.current = null;
+            }
+
+            const container = document.createElement("div");
+            container.className = 'custom-popup';
+
+            popupRef.current.setLngLat([lng, lat]).setDOMContent(container).addTo(mapRef.current);
+
+            const root = createRoot(container);
+            popupRootRef.current = root;
+
+            root.render(
+                <LocationPopup
+                    placeName={placeName}
+                    lat={lat}
+                    lng={lng}
+                    year={yearRef.current}
+                    baseYear={BASE_YEAR}
+                    realTimeAQI={null}
+                    finalAQI={null}
+                    rainfall={0}
+                    rainProbability={null}
+                    macroData={macroDataRef.current}
+                    impact={null}
+                    analysis={null}
+                    analysisLoading={false}
+                    openWeatherKey={OPENWEATHER_KEY}
+                    onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                />
+            );
+        } catch (e) {
+            console.warn("Search popup render skipped:", e);
         }
     }, [flyToPoint]);
 
@@ -1620,13 +1624,13 @@ export default function MapView() {
             <MapMenu layers={layers} setLayers={setLayers} mapStyle={mapStyle} setMapStyle={setMapStyle} mapRef={mapRef} />
 
             <SearchBar mapRef={mapRef} onLocationSelect={handleLocationSelect} />
-                        <TimeSlider
-                            year={year}
-                            setYear={setYear}
-                            baseYear={BASE_YEAR}
-                            minYear={BASE_YEAR}
-                            maxYear={MAX_YEAR}
-                        />
+            <TimeSlider
+                year={year}
+                setYear={setYear}
+                baseYear={BASE_YEAR}
+                minYear={BASE_YEAR}
+                maxYear={MAX_YEAR}
+            />
 
             {/* Google Maps-style Layers Menu - Bottom Left */}
             <div
@@ -1816,7 +1820,7 @@ export default function MapView() {
                             e.target.style.background = layers.traffic ? "rgba(59, 130, 246, 1)" : "rgba(30, 41, 59, 1)";
                         }}
                         onMouseLeave={(e) => {
-                            e.target.style.background = layers.traffic ? "ratio" : "rgba(30, 41, 59, 0.9)";
+                            e.target.style.background = layers.traffic ? "rgba(59, 130, 246, 0.9)" : "rgba(30, 41, 59, 0.9)";
                         }}
                     >
                         <div style={{
@@ -1843,7 +1847,6 @@ export default function MapView() {
                         </div>
                         <span style={{
                             fontSize: 11,
-                            color: "#e2e8f0",
                             color: "#e2e8f0",
                             marginTop: 2,
                             fontWeight: 600,

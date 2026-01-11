@@ -37,22 +37,20 @@ export async function fetchRealtimeAQI(lat, lng, API_KEY) {
     // ---------- AQI CATEGORY ----------
     const category =
       aqi <= 50 ? "Good" :
-      aqi <= 100 ? "Moderate" :
-      aqi <= 150 ? "Unhealthy (Sensitive)" :
-      aqi <= 200 ? "Unhealthy" :
-      aqi <= 300 ? "Very Unhealthy" :
-      "Hazardous";
+        aqi <= 100 ? "Moderate" :
+          aqi <= 150 ? "Unhealthy (Sensitive)" :
+            aqi <= 200 ? "Unhealthy" :
+              aqi <= 300 ? "Very Unhealthy" :
+                "Hazardous";
 
     return {
       aqi,
       category,
-      components: {
-        pm25: Number(pm25.toFixed(1)),
-        pm10: Number((d.components?.pm10 ?? 0).toFixed(1)),
-        no2: Number((d.components?.no2 ?? 0).toFixed(1)),
-        o3: Number((d.components?.o3 ?? 0).toFixed(1)),
-        co: Number((d.components?.co ?? 0).toFixed(1))
-      },
+      pm25: Number(pm25.toFixed(1)),
+      pm10: Number((d.components?.pm10 ?? 0).toFixed(1)),
+      no2: Number((d.components?.no2 ?? 0).toFixed(1)),
+      o3: Number((d.components?.o3 ?? 0).toFixed(1)),
+      co: Number((d.components?.co ?? 0).toFixed(1)),
       timestamp: new Date(d.dt * 1000).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit"
