@@ -8,6 +8,7 @@ import CitySuggestions from "./CitySuggestions";
 import TimeSlider from "./TimeSlider";
 import SearchBar from "./SearchBar";
 import { getUrbanAnalysis } from "../utils/gemini";
+import { fetchIndiaMacroData } from "../utils/worldBank";
 
 // Constants
 const INITIAL_YEAR = 2025;
@@ -104,6 +105,7 @@ export default function MapView() {
   const [showLayersMenu, setShowLayersMenu] = useState(false);
   const [aqiGeo, setAqiGeo] = useState(null);
   const [loadingAQI, setLoadingAQI] = useState(false);
+  const [macroData, setMacroData] = useState(null);
 
 
   /* ================= MAP INIT ================= */
@@ -408,6 +410,16 @@ export default function MapView() {
       }
     };
 
+    // Fetch World Bank data once on mount
+    (async () => {
+      try {
+        const data = await fetchIndiaMacroData();
+        if (isMounted) setMacroData(data);
+      } catch (e) {
+        console.warn("World Bank data failed:", e);
+      }
+    })();
+
     /* ===== FETCH REAL-TIME AQI ===== */
     const fetchAQI = async (lat, lng) => {
       if (!OPENWEATHER_KEY) {
@@ -592,6 +604,25 @@ export default function MapView() {
         </div>
       `;
 
+      // Build World Bank data HTML - MUST be defined before aqiHtml
+      const worldBankHtml = macroData && macroData.population && macroData.urbanPct && macroData.gdpPerCapita ? `
+        <div style="
+          margin-top: 12px;
+          padding-top: 10px;
+          border-top: 1px solid rgba(255,255,255,0.04);
+          font-size: 11px;
+          color: #94a3b8;
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 8px;
+        ">
+          <div>Population: <b style="color:#cbd5f5">${(macroData.population.value/1e6).toFixed(1)}M</b></div>
+          <div>Urban: <b style="color:#cbd5f5">${macroData.urbanPct.value.toFixed(1)}%</b></div>
+          <div>GDP/capita: <b style="color:#cbd5f5">$${Math.round(macroData.gdpPerCapita.value)}</b></div>
+          <div>Poverty: <b style="color:#cbd5f5">${macroData.poverty?.value ? macroData.poverty.value.toFixed(1) : "—"}%</b></div>
+        </div>
+      ` : "";
+
       // 1. Fetch Real Traffic Data for this point
       let currentTrafficFactor = IMPACT_MODEL.baseTraffic; 
       
@@ -640,8 +671,20 @@ export default function MapView() {
         800 + 110 * AQI + 12000 * FloodRisk + 9000 * projectedTraffic + 0.03 * Pop
       );
 
+      // Use World Bank data for realistic economic loss calculation
+      const nationalGDP = macroData?.gdp?.value ?? 3.4e12;
+      const gdpPerCapita = macroData?.gdpPerCapita?.value ?? 2400;
+      const urbanPct = macroData?.urbanPct?.value ?? 35;
+
+      const incomeFactor = gdpPerCapita / 3000;
+      const urbanFactor = urbanPct / 100;
+
       const loss = Math.round(
-        0.0028 * people + 35 * FloodRisk + 18 * projectedTraffic
+        (0.0028 * people +
+        40 * FloodRisk +
+        22 * projectedTraffic) *
+        incomeFactor *
+        urbanFactor
       );
 
       setImpactData({
@@ -770,6 +813,7 @@ export default function MapView() {
             </div>
 
             ${rainHtml}
+            ${worldBankHtml}
           </div>
         `;
       } else if (nearestAQI) {
@@ -793,6 +837,7 @@ export default function MapView() {
             </div>
 
             ${rainHtml}
+            ${worldBankHtml}
           </div>
         `;
       } else {
@@ -856,6 +901,7 @@ export default function MapView() {
                 <div style="font-size: 12px; color: #94a3b8; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
               </div>
               ${aqiHtml}
+              ${!aqiHtml ? worldBankHtml : ""}
             </div>
           `)
           .addTo(mapRef.current);
