@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 
+import MapMenu from "./MapMenu";
 import LayerToggle from "./LayerToggle";
 import EconomicPanel from "./EconomicPanel";
 import CitySuggestions from "./CitySuggestions";
@@ -9,6 +10,7 @@ import TimeSlider from "./TimeSlider";
 import SearchBar from "./SearchBar";
 import { getUrbanAnalysis } from "../utils/gemini";
 import { fetchIndiaMacroData } from "../utils/worldBank";
+import { calculatePopulationDynamics } from "../utils/demographics";
 
 // Constants
 const INITIAL_YEAR = 2025;
@@ -106,6 +108,8 @@ export default function MapView() {
   const [aqiGeo, setAqiGeo] = useState(null);
   const [loadingAQI, setLoadingAQI] = useState(false);
   const [macroData, setMacroData] = useState(null);
+  const [demographics, setDemographics] = useState(null);
+  const [cityDemo, setCityDemo] = useState(null);
 
 
   /* ================= MAP INIT ================= */
@@ -300,6 +304,17 @@ export default function MapView() {
         } catch (err) {
           console.error("Error loading flood data:", err);
           if (isMounted) setError("Failed to load flood data");
+        }
+
+        /* ===== CITY DEMOGRAPHICS (local static) ===== */
+        try {
+          const demoResp = await fetch('/data/demographics.json');
+          if (demoResp && demoResp.ok) {
+            const demo = await demoResp.json();
+            if (isMounted) setCityDemo(demo);
+          }
+        } catch (err) {
+          console.warn('Could not load city demographics:', err);
         }
 
         /* ===== FLOOD DEPTH (ANIMATED) ===== */
@@ -605,23 +620,35 @@ export default function MapView() {
       `;
 
       // Build World Bank data HTML - MUST be defined before aqiHtml
-      const worldBankHtml = macroData && macroData.population && macroData.urbanPct && macroData.gdpPerCapita ? `
-        <div style="
-          margin-top: 12px;
-          padding-top: 10px;
-          border-top: 1px solid rgba(255,255,255,0.04);
-          font-size: 11px;
-          color: #94a3b8;
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 8px;
-        ">
-          <div>Population: <b style="color:#cbd5f5">${(macroData.population.value/1e6).toFixed(1)}M</b></div>
-          <div>Urban: <b style="color:#cbd5f5">${macroData.urbanPct.value.toFixed(1)}%</b></div>
-          <div>GDP/capita: <b style="color:#cbd5f5">$${Math.round(macroData.gdpPerCapita.value)}</b></div>
-          <div>Poverty: <b style="color:#cbd5f5">${macroData.poverty?.value ? macroData.poverty.value.toFixed(1) : "—"}%</b></div>
-        </div>
-      ` : "";
+      let worldBankHtml = "";
+
+      if (!macroData) {
+        worldBankHtml = `
+          <div style="margin-top:12px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.04);font-size:11px;color:#94a3b8;text-align:center;">
+            Loading economic data…
+          </div>
+        `;
+      } else if (macroData.population && macroData.urbanPct && macroData.gdpPerCapita) {
+        const povertyVal = macroData.poverty?.value ?? macroData.povertyDDAY?.value ?? null;
+
+        worldBankHtml = `
+          <div style="
+            margin-top: 12px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255,255,255,0.04);
+            font-size: 11px;
+            color: #94a3b8;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+          ">
+            <div>Population: <b style="color:#cbd5f5">${(macroData.population.value/1e6).toFixed(1)}M</b></div>
+            <div>Urban: <b style="color:#cbd5f5">${macroData.urbanPct.value.toFixed(1)}%</b></div>
+            <div>GDP/capita: <b style="color:#cbd5f5">$${Math.round(macroData.gdpPerCapita.value)}</b></div>
+            <div>Poverty: <b style="color:#cbd5f5">${povertyVal !== null ? povertyVal.toFixed(1) + "%" : "—"}</b></div>
+          </div>
+        `;
+      }
 
       // 1. Fetch Real Traffic Data for this point
       let currentTrafficFactor = IMPACT_MODEL.baseTraffic; 
@@ -673,10 +700,17 @@ export default function MapView() {
 
       // Use World Bank data for realistic economic loss calculation
       const nationalGDP = macroData?.gdp?.value ?? 3.4e12;
-      const gdpPerCapita = macroData?.gdpPerCapita?.value ?? 2400;
+      const nationalPop = macroData?.population?.value ?? 1.4e9;
+      const cityPop = cityDemo?.population ?? IMPACT_MODEL.basePopulation;
+
+      // Scale national GDP to city by population share
+      const popShare = Math.min(1, (cityPop / nationalPop) || 0);
+      const cityGDP = nationalGDP * popShare;
+      const cityGdpPerCapita = cityPop > 0 ? (cityGDP / cityPop) : (macroData?.gdpPerCapita?.value ?? 2400);
+
       const urbanPct = macroData?.urbanPct?.value ?? 35;
 
-      const incomeFactor = gdpPerCapita / 3000;
+      const incomeFactor = cityGdpPerCapita / 3000;
       const urbanFactor = urbanPct / 100;
 
       const loss = Math.round(
@@ -694,20 +728,58 @@ export default function MapView() {
         risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡"
       });
 
+      // Calculate Demographics based on the new Impact Data
+      let demoStats = null;
+      try {
+        demoStats = calculatePopulationDynamics(y, { loss });
+        setDemographics(demoStats);
+      } catch (err) {
+        console.warn('Demographics calc failed:', err);
+      }
+
       // Kick off Gemini AI analysis (non-blocking)
       (async () => {
         try {
           setAnalysisLoading(true);
           setUrbanAnalysis(null);
+          // Simple projection for national GDP for the requested year (fallback growth ~6%/yr)
+          const nationalGDPYear = macroData?.gdp?.value ? macroData.gdp.value * (1 + 0.06 * (y - 2023)) : 3.4e12;
+
           const aiData = {
-            zone: `Delhi Urban Zone (${y})`,
-            people,
-            loss,
-            risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡",
-            rainfall_mm: rainfall,
-            rain_probability: rainProbability,
-            floodRisk: FloodRisk
+            // Core Simulation Data
+            year: y,
+            zone: `Delhi Urban Zone`,
+
+            // Impact Metrics
+            people_affected: people,
+            economic_loss_cr: loss,
+            risk_level: FloodRisk > 0.6 ? "Severe" : FloodRisk > 0.4 ? "Moderate" : "Low",
+
+            // Environmental Real-time Data
+            rainfall_mm: rainfall.toFixed(1),
+            rain_probability_pct: rainProbability,
+            aqi_realtime: realTimeAQI ? realTimeAQI.aqi : Math.round(AQI),
+            flood_risk_index: FloodRisk.toFixed(2),
+
+            // Traffic Data
+            traffic_congestion_index: projectedTraffic.toFixed(2),
+
+            // Demographics & Social Data (Calculated Model)
+            demographics: {
+              population: demoStats ? (demoStats.totalPopulation / 1e6).toFixed(2) + " Million" : (cityPop / 1e6).toFixed(2) + " Million",
+              growth_rate: demoStats ? demoStats.growthRate + "%" : "Unknown",
+              tfr: demoStats ? demoStats.tfr : "Unknown",
+              migration_status: demoStats?.migrationImpact ?? (demoStats?.migrationShare ? `${demoStats.migrationShare}%` : "Unknown")
+            },
+
+            // Macro-Economics (World Bank Live + Projections)
+            macro: {
+              national_gdp_usd: (nationalGDPYear / 1e12).toFixed(2) + " Trillion",
+              urban_poverty_rate: macroData?.poverty?.value ? macroData.poverty.value + "%" : "Unknown",
+              gdp_per_capita: Math.round(incomeFactor * 3000)
+            }
           };
+
           const analysis = await getUrbanAnalysis(aiData, y);
           setUrbanAnalysis(analysis || "No analysis available.");
         } catch (err) {
@@ -1541,6 +1613,7 @@ export default function MapView() {
         </div>
       )}
 
+      <MapMenu layers={layers} setLayers={setLayers} mapStyle={mapStyle} setMapStyle={setMapStyle} />
       <LayerToggle layers={layers} setLayers={setLayers} />
       <SearchBar mapRef={mapRef} onLocationSelect={handleLocationSelect} />
       <TimeSlider year={year} setYear={setYear} />
@@ -1930,7 +2003,7 @@ export default function MapView() {
         </button>
       </div>
 
-      <EconomicPanel data={impactData} analysis={urbanAnalysis} analysisLoading={analysisLoading} />
+      <EconomicPanel data={impactData} demographics={demographics} analysis={urbanAnalysis} analysisLoading={analysisLoading} />
       <CitySuggestions map={mapRef.current} visible={showSuggestions} />
 
       <div

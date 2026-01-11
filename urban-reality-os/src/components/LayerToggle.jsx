@@ -10,7 +10,7 @@ export default function LayerToggle({ layers, setLayers }) {
       style={{
         position: "absolute",
         top: 20,
-        left: 20,
+        left: 80,
         background: "rgba(2, 6, 23, 0.9)",
         padding: 12,
         borderRadius: 8,
