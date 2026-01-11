@@ -1977,7 +1977,7 @@ export default function MapView() {
       <div
         style={{
           position: "absolute",
-          top: 20,
+          top: 80,
           right: 20,
           zIndex: 10,
           background: "rgba(2, 6, 23, 0.85)",

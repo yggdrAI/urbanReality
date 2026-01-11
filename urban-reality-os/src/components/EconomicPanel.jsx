@@ -15,7 +15,8 @@ export default function EconomicPanel({ data, analysis, analysisLoading, demogra
         width: 300,
         backdropFilter: "blur(12px)",
         boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-        border: "1px solid rgba(255,255,255,0.1)"
+        border: "1px solid rgba(255,255,255,0.1)",
+        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
       }}
     >
       <div className="mb-4 pb-4 border-b border-white/10">

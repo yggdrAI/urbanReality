@@ -20,7 +20,8 @@ export default function LayerToggle({ layers, setLayers }) {
         backdropFilter: "blur(8px)",
         boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
         minWidth: 160,
-        maxWidth: 180
+        maxWidth: 180,
+        fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
       }}
     >
       <strong style={{ display: "block", marginBottom: 8 }}>Layers</strong>
