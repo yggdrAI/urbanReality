@@ -110,6 +110,7 @@ export default function MapView() {
     const [macroData, setMacroData] = useState(null);
     const [demographics, setDemographics] = useState(null);
     const [cityDemo, setCityDemo] = useState(null);
+    const [locationPopulation, setLocationPopulation] = useState(null);
 
     /* ================= MAP INIT ================= */
     useEffect(() => {
