@@ -81,6 +81,7 @@ export default function MapView() {
     const floodDepthRef = useRef(0);
     const flyThroughTimeoutsRef = useRef([]);
     const rainfallRef = useRef(0); // Store current rainfall for flood animation
+    const macroDataRef = useRef(null);
 
     const [year, setYear] = useState(INITIAL_YEAR);
     const [impactData, setImpactData] = useState(null);
@@ -112,6 +113,9 @@ export default function MapView() {
     const [cityDemo, setCityDemo] = useState(null);
     const [locationPopulation, setLocationPopulation] = useState(null);
 
+    // Sync macroData to ref for usage in callbacks
+    useEffect(() => { macroDataRef.current = macroData; }, [macroData]);
+
     /* ================= MAP INIT ================= */
     useEffect(() => {
         if (!mapContainer.current || mapRef.current) return;
@@ -131,6 +135,7 @@ export default function MapView() {
 
         mapRef.current = map;
         popupRef.current = new maplibregl.Popup({
+            className: 'custom-popup',
             closeButton: false,
             offset: 12,
             closeOnClick: true
@@ -241,47 +246,6 @@ export default function MapView() {
                         setLoadingAQI(false);
                     }
                 };
-
-                try {
-                    const aqiData = await fetchAllCitiesAQI();
-
-                    if (isMounted && aqiData && aqiData.features.length > 0) {
-                        map.addSource("aqi", { type: "geojson", data: aqiData });
-                        setAqiGeo(aqiData);
-                        map.addLayer({
-                            id: "aqi-layer",
-                            type: "circle",
-                            source: "aqi",
-                            paint: {
-                                "circle-radius": 12,
-                                "circle-opacity": 0.9,
-                                "circle-stroke-width": 2,
-                                "circle-stroke-color": "#ffffff",
-                                "circle-stroke-opacity": 0.8,
-                                "circle-color": [
-                                    "interpolate",
-                                    ["linear"],
-                                    ["get", "aqi"],
-                                    0, "#22c55e",
-                                    50, "#22c55e",
-                                    100, "#eab308",
-                                    150, "#f97316",
-                                    200, "#dc2626",
-                                    300, "#9333ea",
-                                    400, "#6b21a8"
-                                ]
-                            },
-                            layout: {
-                                visibility: layers.aqi ? "visible" : "none"
-                            }
-                        });
-                    } else if (isMounted && !OPENWEATHER_KEY) {
-                        console.warn("OpenWeather API key not set. AQI layer will not be available.");
-                    }
-                } catch (err) {
-                    console.error("Error loading AQI data:", err);
-                    if (isMounted) setError("Failed to load AQI data");
-                }
 
                 /* ===== STATIC FLOOD (DATA) ===== */
                 try {
@@ -557,535 +521,398 @@ export default function MapView() {
 
             const { lng, lat } = e.lngLat;
             const y = yearRef.current;
-
-            // Get place name from coordinates
-            const placeName = await getPlaceName(lat, lng);
+            const macroData = macroDataRef.current;
 
             // Show loading popup immediately at clicked location
             if (popupRef.current && mapRef.current) {
                 popupRef.current
                     .setLngLat([lng, lat])
                     .setHTML(`
-            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 20px; text-align: center;">
-              <div style="display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.06); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px;"></div>
-              <div style="font-size: 13px; color: #94a3b8; font-weight: 500;">Loading AQI data...</div>
-            </div>
-            <style>
-              @keyframes spin { to { transform: rotate(360deg); } }
-            </style>
-          `)
+            <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 20px; text-align: center;">
+              <div style="display: inline-block; width: 20px; height: 20px; border: 2px solid rgba(255,255,255,0.06); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 12px;"></div>
+              <div style="font-size: 13px; color: #94a3b8; font-weight: 500;">Analyzing Location...</div>
+            </div>
+            <style>
+              @keyframes spin { to { transform: rotate(360deg); } }
+            </style>
+          `)
                     .addTo(mapRef.current);
             }
 
-            // Fetch real-time AQI first (with timeout)
-            let realTimeAQI = null;
-            if (OPENWEATHER_KEY) {
-                try {
-                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000));
-                    realTimeAQI = await Promise.race([fetchAQI(lat, lng), timeout]);
-                } catch (e) {
-                    console.warn("AQI fetch timed out or failed", e);
-                }
-            }
-
-            // Calculate time factor for future projections
-            const yearsElapsed = y - MIN_YEAR;
-            const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
-
-            // 🌧 Fetch real-time rainfall (Open-Meteo) (with timeout)
-            let rainfall = 0;
-            let rainProbability = 0;
-
             try {
-                const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000));
-                const rainData = await Promise.race([fetchRainfall(lat, lng), timeout]);
-                if (rainData) {
-                    rainfall = rainData.rain; // mm
-                    rainProbability = rainData.probability; // %
-                    rainfallRef.current = rainfall; // Store for flood animation
-                }
-            } catch (e) {
-                console.warn("Rainfall fetch timed out", e);
-            }
+                // Parallel Data Fetching
+                const [placeName, realTimeAQI, rainData, trafficJson] = await Promise.all([
+                    // Place Name
+                    getPlaceName(lat, lng).catch(err => {
+                        console.warn("Geocoding failed:", err);
+                        return "Unknown Location";
+                    }),
 
-            // Build rain HTML (integrated inside AQI card) - MUST be defined before aqiHtml
-            const rainHtml = `
-        <div style="
-          margin-top: 10px;
-          padding-top: 10px;
-          border-top: 1px solid rgba(255,255,255,0.04);
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 10px;
-          font-size: 12px;
-          color: #cbd5f5;
-        ">
-          <div style="
-            background: rgba(255,255,255,0.03);
-            border-radius: 8px;
-            padding: 8px 10px;
-            display:flex;
-            align-items:center;
-            gap:8px;
-          ">
-            🌧 <span>Rainfall</span>
-            <b style="margin-left:auto;color:#60a5fa">${rainfall.toFixed(1)} mm</b>
-          </div>
-
-          <div style="
-            background: rgba(255,255,255,0.03);
-            border-radius: 8px;
-            padding: 8px 10px;
-            display:flex;
-            align-items:center;
-            gap:8px;
-          ">
-            ☔ <span>Probability</span>
-            <b style="margin-left:auto;color:#38bdf8">${rainProbability}%</b>
-          </div>
-        </div>
-      `;
-
-            // Build World Bank data HTML - MUST be defined before aqiHtml
-            let worldBankHtml = "";
-
-            if (macroData && macroData.population && macroData.urbanPct && macroData.gdpPerCapita) {
-                const povertyVal = macroData.poverty?.value ?? macroData.povertyDDAY?.value ?? null;
-
-                worldBankHtml = `
-          <div style="
-            margin-top: 12px;
-            padding-top: 10px;
-            border-top: 1px solid rgba(255,255,255,0.04);
-            font-size: 11px;
-            color: #94a3b8;
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 8px;
-          ">
-            <div>Population: <b style="color:#cbd5f5">${(macroData.population.value / 1e6).toFixed(1)}M</b></div>
-            <div>Urban: <b style="color:#cbd5f5">${macroData.urbanPct.value.toFixed(1)}%</b></div>
-            <div>GDP/capita: <b style="color:#cbd5f5">$${Math.round(macroData.gdpPerCapita.value)}</b></div>
-            <div>Poverty: <b style="color:#cbd5f5">${povertyVal !== null ? povertyVal.toFixed(1) + "%" : "—"}</b></div>
-          </div>
-        `;
-            }
-
-            // 1. Fetch Real Traffic Data for this point
-            let currentTrafficFactor = IMPACT_MODEL.baseTraffic;
-
-            try {
-                if (TOMTOM_KEY) {
-                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000));
-                    const response = await Promise.race([
-                        fetch(`https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${TOMTOM_KEY}&point=${lat},${lng}`),
-                        timeout
-                    ]);
-
-                    if (response.ok) {
-                        const data = await response.json();
-
-                        if (data.flowSegmentData) {
-                            const { currentSpeed, freeFlowSpeed } = data.flowSegmentData;
-                            if (freeFlowSpeed > 0) {
-                                const congestion = 1 - (currentSpeed / freeFlowSpeed);
-                                currentTrafficFactor = Math.max(0, Math.min(1, congestion));
-                            }
-                        }
-                    }
-                }
-            } catch (err) {
-                console.warn("Could not fetch real-time traffic, falling back to model", err);
-            }
-
-            // 2. Mix Real Data with Future Projections
-            const projectedTraffic = currentTrafficFactor + (0.5 * timeFactor);
-
-            // Use real-time AQI if available, otherwise use model
-            const AQI = realTimeAQI ? realTimeAQI.aqi : (IMPACT_MODEL.baseAQI + (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI) * timeFactor);
-
-            // Flood risk influenced by rainfall + future projection
-            const rainFactor = Math.min(rainfall / 20, 1); // 20mm+ = severe
-            const rainProbFactor = rainProbability / 100;
-
-            const FloodRisk = Math.min(
-                1,
-                IMPACT_MODEL.baseFloodRisk +
-                (IMPACT_MODEL.maxFloodRisk - IMPACT_MODEL.baseFloodRisk) * timeFactor +
-                rainFactor * 0.4 +
-                rainProbFactor * 0.2
-            );
-            const Pop = IMPACT_MODEL.basePopulation + IMPACT_MODEL.populationGrowth * timeFactor;
-
-            const people = Math.round(
-                800 + 110 * AQI + 12000 * FloodRisk + 9000 * projectedTraffic + 0.03 * Pop
-            );
-
-            // Economic loss will be calculated by Gemini AI based on location-specific factors
-            // No static calculation - Gemini will analyze location and calculate appropriate loss
-            setImpactData({
-                zone: `${placeName} (${y})`,
-                people,
-                loss: null, // Will be calculated by Gemini AI
-                risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡"
-            });
-
-            // Reset location population when clicking new location
-            setLocationPopulation(null);
-
-            // Calculate Demographics (will be updated once Gemini provides loss value)
-            let demoStats = null;
-            try {
-                demoStats = calculatePopulationDynamics(y, { loss: null });
-                setDemographics(demoStats);
-            } catch (err) {
-                console.warn('Demographics calc failed:', err);
-            }
-
-            // Kick off Gemini AI analysis (non-blocking)
-            (async () => {
-                try {
-                    setAnalysisLoading(true);
-                    setUrbanAnalysis(null);
-                    // Simple projection for national GDP for the requested year (fallback growth ~6%/yr)
-                    const nationalGDPYear = macroData?.gdp?.value ? macroData.gdp.value * (1 + 0.06 * (y - 2023)) : 3.4e12;
-
-                    const aiData = {
-                        // Core Simulation Data
-                        year: y,
-                        zone: placeName,
-                        coordinates: { lat, lng },
-
-                        // Impact Metrics (economic loss will be calculated by Gemini)
-                        people_affected: people,
-                        risk_level: FloodRisk > 0.6 ? "Severe" : FloodRisk > 0.4 ? "Moderate" : "Low",
-
-                        // Environmental Real-time Data
-                        rainfall_mm: rainfall.toFixed(1),
-                        rain_probability_pct: rainProbability,
-                        aqi_realtime: realTimeAQI ? realTimeAQI.aqi : Math.round(AQI),
-                        flood_risk_index: FloodRisk.toFixed(2),
-
-                        // Traffic Data
-                        traffic_congestion_index: projectedTraffic.toFixed(2),
-
-                        // Demographics & Social Data (Calculated Model)
-                        demographics: {
-                            population: demoStats ? (demoStats.totalPopulation / 1e6).toFixed(2) + " Million" : (cityDemo / 1e6).toFixed(2) + " Million",
-                            growth_rate: demoStats ? demoStats.growthRate + "%" : "Unknown",
-                            tfr: demoStats ? demoStats.tfr : "Unknown",
-                            migration_status: demoStats?.migrationImpact ?? (demoStats?.migrationShare ? `${demoStats.migrationShare}%` : "Unknown")
-                        },
-
-                        // Macro-Economics (World Bank Live + Projections)
-                        macro: {
-                            national_gdp_usd: macroData?.gdp?.value ? (macroData.gdp.value / 1e12).toFixed(2) + " Trillion" : "Unknown",
-                            urban_poverty_rate: macroData?.poverty?.value ? macroData.poverty.value + "%" : "Unknown",
-                            gdp_per_capita: macroData?.gdpPerCapita?.value ? Math.round(macroData.gdpPerCapita.value) : "Unknown"
-                        }
-                    };
-
-                    const metrics = {
-                        aqi: aiData.aqi_realtime,
-                        traffic: parseFloat(aiData.traffic_congestion_index),
-                        floodDepth: floodDepthRef.current || 0,
-                        weather: `Rainfall: ${aiData.rainfall_mm}mm`
-                    };
-                    const analysis = await getUrbanAnalysis(aiData, y, metrics);
-                    setUrbanAnalysis(analysis || "No analysis available.");
-
-                    // Extract population, economic loss and people affected from Gemini's analysis
-                    // Format: "Real-Time Loss: ₹[Amount] Cr. Population: [X] people."
-                    const populationMatch = analysis?.match(/Population:\s*([\d,]+)\s+people/i);
-                    // Robust regex for currency: Matches ₹ 1,200 Cr, ₹1200 Cr, etc.
-                    const lossMatch = analysis?.match(/[₹Rs.]\s*([\d,]+(?:\.\d+)?)\s*Cr/i);
-                    const peopleMatch = analysis?.match(/affects\s+([\d,]+)\s+people/i);
-
-                    // Extract and set population
-                    if (populationMatch) {
-                        const pop = parseInt(populationMatch[1].replace(/,/g, ''), 10);
-                        setLocationPopulation(pop);
-                    }
-
-                    if (lossMatch) {
-                        // Remove commas and parse
-                        const rawLoss = lossMatch[1].replace(/,/g, '');
-                        const calculatedLoss = Math.round(parseFloat(rawLoss));
-                        const affectedPeople = peopleMatch ? parseInt(peopleMatch[1].replace(/,/g, '')) : people;
-
-                        setImpactData(prev => ({
-                            ...prev,
-                            loss: calculatedLoss,
-                            people: affectedPeople
-                        }));
-                        // Recalculate demographics with the new loss value
+                    // AQI Data (race against timeout)
+                    (async () => {
+                        if (!OPENWEATHER_KEY) return null;
                         try {
-                            const updatedDemoStats = calculatePopulationDynamics(y, { loss: calculatedLoss });
-                            setDemographics(updatedDemoStats);
-                        } catch (err) {
-                            console.warn('Demographics recalculation failed:', err);
+                            return await Promise.race([
+                                fetchAQI(lat, lng),
+                                new Promise((_, r) => setTimeout(() => r(new Error('AQI Timeout')), 4000))
+                            ]);
+                        } catch (e) {
+                            console.warn("AQI fetch failed:", e);
+                            return null;
                         }
-                    } else {
-                        // If AI fails to return strict format, try to infer or keep old values
-                        console.warn("Could not parse Economic Loss from AI analysis:", analysis);
-                    }
+                    })(),
 
-                    // Update popup with analysis
-                    if (popupRef.current && mapRef.current) {
-                        const popupElement = popupRef.current.getElement();
-                        const analysisContainer = popupElement?.querySelector('#analysis-container');
-                        if (analysisContainer) {
-                            analysisContainer.innerHTML = `
-                <div style="font-size: 13px; font-weight: 700; color: #60a5fa; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">🤖 AI Location Analysis</div>
-                <div style="font-size: 14px; color: #e2e8f0; line-height: 1.7; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; max-height: 300px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-weight: 400; max-width: 100%; box-sizing: border-box;">${analysis || "No analysis available."}</div>
-              `;
+                    // Rainfall Data (race against timeout)
+                    (async () => {
+                        try {
+                            return await Promise.race([
+                                fetchRainfall(lat, lng),
+                                new Promise((_, r) => setTimeout(() => r(new Error('Rain Timeout')), 4000))
+                            ]);
+                        } catch (e) {
+                            console.warn("Rain fetch failed:", e);
+                            return { rain: 0, probability: 0 };
                         }
-                    }
-                } catch (err) {
-                    console.error("Gemini analysis failed:", err);
-                    setUrbanAnalysis("Analysis failed. See console for details.");
+                    })(),
 
-                    // Update popup with error
-                    if (popupRef.current && mapRef.current) {
-                        const popupElement = popupRef.current.getElement();
-                        const analysisContainer = popupElement?.querySelector('#analysis-container');
-                        if (analysisContainer) {
-                            analysisContainer.innerHTML = `
-                <div style="font-size: 11px; color: #f87171; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-weight: 500;">Analysis temporarily unavailable</div>
-              `;
-                        }
+                    // Traffic Data (race against timeout)
+                    (async () => {
+                        if (!TOMTOM_KEY) return null;
+                        try {
+                            const res = await Promise.race([
+                                fetch(`https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${TOMTOM_KEY}&point=${lat},${lng}`),
+                                new Promise((_, r) => setTimeout(() => r(new Error('Traffic Timeout')), 4000))
+                            ]);
+                            if (res.ok) return await res.json();
+                            return null;
+                        } catch (e) { return null; }
+                    })()
+                ]);
+
+                // 3. Process Data & Calculate Metrics
+
+                // Rainfall
+                const rainfall = rainData ? rainData.rain : 0;
+                const rainProbability = rainData ? rainData.probability : 0;
+                rainfallRef.current = rainfall; // Store for flood animation
+
+                // Time Factor
+                const yearsElapsed = y - MIN_YEAR;
+                const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
+
+                // Traffic Calculation
+                let currentTrafficFactor = IMPACT_MODEL.baseTraffic;
+                if (trafficJson && trafficJson.flowSegmentData) {
+                    const { currentSpeed, freeFlowSpeed } = trafficJson.flowSegmentData;
+                    if (freeFlowSpeed > 0) {
+                        const congestion = 1 - (currentSpeed / freeFlowSpeed);
+                        currentTrafficFactor = Math.max(0, Math.min(1, congestion));
                     }
-                } finally {
-                    setAnalysisLoading(false);
                 }
-            })();
+                const projectedTraffic = currentTrafficFactor + (0.5 * timeFactor);
 
-            // Fallback: Find nearest AQI point from static data if no real-time data
-            let nearestAQI = null;
-            if (!realTimeAQI && aqiGeo && aqiGeo.features && aqiGeo.features.length) {
-                const toRad = (deg) => (deg * Math.PI) / 180;
-                const haversine = (lat1, lon1, lat2, lon2) => {
-                    const R = 6371e3; // meters
-                    const phi1 = toRad(lat1);
-                    const phi2 = toRad(lat2);
-                    const dPhi = toRad(lat2 - lat1);
-                    const dLambda = toRad(lon2 - lon1);
-                    const a = Math.sin(dPhi / 2) * Math.sin(dPhi / 2) +
-                        Math.cos(phi1) * Math.cos(phi2) * Math.sin(dLambda / 2) * Math.sin(dLambda / 2);
-                    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-                    return R * c;
+                // Risk & People Calculation
+                const AQI = realTimeAQI ? realTimeAQI.aqi : (IMPACT_MODEL.baseAQI + (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI) * timeFactor);
+                const rainFactor = Math.min(rainfall / 20, 1);
+                const rainProbFactor = rainProbability / 100;
+
+                const FloodRisk = Math.min(
+                    1,
+                    IMPACT_MODEL.baseFloodRisk +
+                    (IMPACT_MODEL.maxFloodRisk - IMPACT_MODEL.baseFloodRisk) * timeFactor +
+                    rainFactor * 0.4 +
+                    rainProbFactor * 0.2
+                );
+
+                const Pop = IMPACT_MODEL.basePopulation + IMPACT_MODEL.populationGrowth * timeFactor;
+                const people = Math.round(
+                    800 + 110 * AQI + 12000 * FloodRisk + 9000 * projectedTraffic + 0.03 * Pop
+                );
+
+                // 4. Update UI - Sidebar (Impact Panel)
+                setImpactData({
+                    zone: `${placeName} (${y})`,
+                    people,
+                    loss: null, // Will be calculated by Gemini AI
+                    risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡"
+                });
+
+                setLocationPopulation(null); // Reset population detail logic
+
+                // Calculate Demographics (Initial)
+                let demoStats = null;
+                try {
+                    demoStats = calculatePopulationDynamics(y, { loss: null });
+                    setDemographics(demoStats);
+                } catch (err) {
+                    console.warn('Demographics calc failed:', err);
+                }
+
+                // 5. Build Popup Content
+
+                // Rainfall HTML
+                const rainHtml = `
+            <div style="
+              margin-top: 10px;
+              padding-top: 10px;
+              border-top: 1px solid rgba(255,255,255,0.04);
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 10px;
+              font-size: 12px;
+              color: #cbd5f5;
+            ">
+              <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 8px 10px; display:flex; align-items:center; gap:8px;">
+                🌧 <span>Rainfall</span>
+                <b style="margin-left:auto;color:#60a5fa">${rainfall.toFixed(1)} mm</b>
+              </div>
+              <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 8px 10px; display:flex; align-items:center; gap:8px;">
+                ☔ <span>Probability</span>
+                <b style="margin-left:auto;color:#38bdf8">${rainProbability}%</b>
+              </div>
+            </div>
+          `;
+
+                // World Bank HTML
+                let worldBankHtml = "";
+                if (macroData && macroData.population && macroData.urbanPct && macroData.gdpPerCapita) {
+                    const povertyVal = macroData.poverty?.value ?? macroData.povertyDDAY?.value ?? null;
+                    worldBankHtml = `
+            <div style="
+              margin-top: 12px;
+              padding-top: 10px;
+              border-top: 1px solid rgba(255,255,255,0.04);
+              font-size: 11px;
+              color: #94a3b8;
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 8px;
+            ">
+              <div>Population: <b style="color:#cbd5f5">${(macroData.population.value / 1e6).toFixed(1)}M</b></div>
+              <div>Urban: <b style="color:#cbd5f5">${macroData.urbanPct.value.toFixed(1)}%</b></div>
+              <div>GDP/capita: <b style="color:#cbd5f5">$${Math.round(macroData.gdpPerCapita.value)}</b></div>
+              <div>Poverty: <b style="color:#cbd5f5">${povertyVal !== null ? povertyVal.toFixed(1) + "%" : "—"}</b></div>
+            </div>
+          `;
+                }
+
+                // AQI HTML
+                let aqiHtml = '';
+                // Helper for AQI color
+                const getAqiColor = (val) => {
+                    if (val <= 50) return '#22c55e';
+                    if (val <= 100) return '#eab308';
+                    if (val <= 150) return '#f97316';
+                    if (val <= 200) return '#dc2626';
+                    if (val <= 300) return '#9333ea';
+                    return '#6b21a8';
+                };
+                const getAqiStatus = (val) => {
+                    if (val <= 50) return 'Good';
+                    if (val <= 100) return 'Moderate';
+                    if (val <= 150) return 'Unhealthy (Sens.)';
+                    if (val <= 200) return 'Unhealthy';
+                    if (val <= 300) return 'Very Unhealthy';
+                    return 'Hazardous';
                 };
 
-                let best = { dist: Infinity, feat: null };
-                for (const f of aqiGeo.features) {
-                    const [fx, fy] = f.geometry.coordinates; // [lng, lat]
-                    const d = haversine(lat, lng, fy, fx);
-                    if (d < best.dist) {
-                        best = { dist: d, feat: f };
+                if (realTimeAQI) {
+                    const color = getAqiColor(realTimeAQI.aqi);
+                    const status = getAqiStatus(realTimeAQI.aqi);
+
+                                // Compact AQI card
+                                aqiHtml = `
+                        <div style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 6px 16px rgba(0,0,0,0.45); border-radius: 10px; padding: 8px; margin: 6px; border: 1px solid rgba(255,255,255,0.06); backdrop-filter: blur(8px); color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: 260px; box-sizing: border-box; word-wrap: break-word;">
+                            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;gap:6px;">
+                                <div style="flex:1;min-width:0;">
+                                    <div style="font-size:10px;color:#94a3b8;font-weight:700;letter-spacing:0.5px;text-transform:uppercase;margin-bottom:4px;">Air Quality</div>
+                                    <div style="display:flex;align-items:baseline;gap:8px;">
+                                        <span style="font-size:18px;font-weight:800;color:${color};line-height:1;white-space:nowrap;">${realTimeAQI.aqi}</span>
+                                        <span style="font-size:12px;color:#cbd5e1;font-weight:600;white-space:nowrap;">${status}</span>
+                                    </div>
+                                </div>
+                                <div style="width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,0.04);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.06);flex-shrink:0;">
+                                    <div style="width:14px;height:14px;border-radius:50%;background:${color};box-shadow:0 0 8px ${color}60;"></div>
+                                </div>
+                            </div>
+
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;">
+                                <div style="flex:1;min-width:0;">
+                                    <div style="font-size:10px;color:#64748b;margin-bottom:4px;font-weight:600;">PM2.5</div>
+                                    <div style="font-size:12px;font-weight:700;color:#e2e8f0;">${realTimeAQI.components.pm25} <span style="font-size:10px;color:#94a3b8;font-weight:500">μg/m³</span></div>
+                                </div>
+                                <div style="flex:1;min-width:0;">
+                                    <div style="font-size:10px;color:#64748b;margin-bottom:4px;font-weight:600;">PM10</div>
+                                    <div style="font-size:12px;font-weight:700;color:#e2e8f0;">${realTimeAQI.components.pm10} <span style="font-size:10px;color:#94a3b8;font-weight:500">μg/m³</span></div>
+                                </div>
+                            </div>
+
+                            <div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.04);padding-top:8px;display:flex;justify-content:space-between;align-items:center;">
+                                <div style="font-size:11px;color:#94a3b8;">Updated ${realTimeAQI.timestamp}</div>
+                                <div style="font-size:11px;color:#94a3b8;">${status}</div>
+                            </div>
+                            ${rainHtml}
+                            ${worldBankHtml}
+                        </div>
+                    `;
+                } else {
+                    // Fallback if no real-time AQI
+                    let nearestMsg = '';
+                    let nearestVal = null;
+                    let aqiColor = '#94a3b8';
+
+                    if (aqiGeo && aqiGeo.features && aqiGeo.features.length) {
+                        let bestDist = Infinity;
+                        for (const f of aqiGeo.features) {
+                            const [fx, fy] = f.geometry.coordinates;
+                            const d = (lat - fy) * (lat - fy) + (lng - fx) * (lng - fx);
+                            if (d < bestDist) { bestDist = d; nearestVal = f.properties.aqi ?? f.properties.value; }
+                        }
+                        if (nearestVal) {
+                            aqiColor = getAqiColor(nearestVal);
+                            nearestMsg = `
+                <div style="margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                   <div style="font-size:9px; color:#94a3b8; font-weight:700; text-transform:uppercase;">Approx. AQI</div>
+                   <div style="font-size:20px; font-weight:800; color:${aqiColor};">${nearestVal}</div>
+                </div>`;
+                        }
                     }
-                }
-                if (best.feat) {
-                    nearestAQI = {
-                        value: best.feat.properties && (best.feat.properties.aqi ?? best.feat.properties.AQI ?? best.feat.properties.value),
-                        distance_m: Math.round(best.dist)
-                    };
-                }
-            }
 
-            // Build AQI display HTML with modern, minimal design
-            let aqiHtml = '';
-            if (realTimeAQI) {
-                let aqiColor = '#22c55e'; // Green (0-50)
-                let aqiStatus = 'Good';
-                if (realTimeAQI.aqi > 50 && realTimeAQI.aqi <= 100) {
-                    aqiColor = '#eab308';
-                    aqiStatus = 'Moderate';
-                } else if (realTimeAQI.aqi > 100 && realTimeAQI.aqi <= 150) {
-                    aqiColor = '#f97316';
-                    aqiStatus = 'Unhealthy for Sensitive';
-                } else if (realTimeAQI.aqi > 150 && realTimeAQI.aqi <= 200) {
-                    aqiColor = '#dc2626';
-                    aqiStatus = 'Unhealthy';
-                } else if (realTimeAQI.aqi > 200 && realTimeAQI.aqi <= 300) {
-                    aqiColor = '#9333ea';
-                    aqiStatus = 'Very Unhealthy';
-                } else if (realTimeAQI.aqi > 300) {
-                    aqiColor = '#6b21a8';
-                    aqiStatus = 'Hazardous';
+                                        aqiHtml = `
+                        <div style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 6px 16px rgba(0,0,0,0.45); border-radius: 10px; padding: 8px; margin: 6px; border: 1px solid rgba(255,255,255,0.06); text-align: center; backdrop-filter: blur(8px); max-width: 240px;">
+                            <div style="color: #94a3b8; font-size: 11px; line-height: 1.4; font-weight: 500;">
+                                ${OPENWEATHER_KEY ? 'Real-time AQI unavailable' : 'Set API Key for AQI'}
+                            </div>
+                            ${nearestMsg}
+                            ${rainHtml}
+                            ${worldBankHtml}
+                        </div>
+                    `;
                 }
 
-                // Dark-themed AQI card - compact size
-                aqiHtml = `
-          <div style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 8px 24px rgba(0,0,0,0.6); border-radius: 10px; padding: 12px; margin: 10px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(12px); color: #e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; max-width: calc(100% - 20px); box-sizing: border-box; word-wrap: break-word;">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px;flex-wrap:wrap;">
-              <div style="flex:1;min-width:0;">
-                <div style="font-size:9px;color:#94a3b8;font-weight:700;letter-spacing:0.6px;text-transform:uppercase;margin-bottom:6px;white-space:nowrap;">Air Quality Index</div>
-                <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;">
-                  <span style="font-size:24px;font-weight:800;color:${aqiColor};line-height:1;font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;white-space:nowrap;">${realTimeAQI.aqi}</span>
-                  <span style="font-size:11px;color:#cbd5e1;font-weight:600;white-space:nowrap;">${aqiStatus}</span>
-                </div>
-              </div>
-              <div style="width:36px;height:36px;border-radius:10px;background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.1);flex-shrink:0;">
-                <div style="width:18px;height:18px;border-radius:50%;background:${aqiColor};box-shadow:0 0 12px ${aqiColor}80;"></div>
-              </div>
-            </div>
+                // 6. Set Final Popup HTML
+                if (popupRef.current && mapRef.current) {
+                    const map = mapRef.current;
+                    const closePopup = `
+            <div
+              style="position:absolute; top:10px; right:12px; cursor:pointer; font-size:16px; color:#94a3b8; font-weight:600; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; transition:all 0.2s; z-index:1300;"
+              onmouseover="this.style.background='rgba(255,255,255,0.1)';this.style.color='#f1f5f9'"
+              onmouseout="this.style.background='transparent';this.style.color='#94a3b8'"
+              onclick="this.closest('.maplibregl-popup').remove()"
+            >
+              ✕
+            </div>
+          `;
 
-            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);">
-              <div style="min-width:0;">
-                <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:4px;font-weight:600;letter-spacing:0.4px;white-space:nowrap;">PM2.5</div>
-                <div style="font-size:11px;font-weight:700;color:#e2e8f0;word-break:break-word;">${realTimeAQI.components.pm25} <span style="font-size:9px;color:#94a3b8;font-weight:500">μg/m³</span></div>
-              </div>
-              <div style="min-width:0;">
-                <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:4px;font-weight:600;letter-spacing:0.4px;white-space:nowrap;">PM10</div>
-                <div style="font-size:11px;font-weight:700;color:#e2e8f0;word-break:break-word;">${realTimeAQI.components.pm10} <span style="font-size:9px;color:#94a3b8;font-weight:500">μg/m³</span></div>
-              </div>
-              <div style="min-width:0;">
-                <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:4px;font-weight:600;letter-spacing:0.4px;white-space:nowrap;">NO₂</div>
-                <div style="font-size:11px;font-weight:700;color:#e2e8f0;word-break:break-word;">${realTimeAQI.components.no2} <span style="font-size:9px;color:#94a3b8;font-weight:500">μg/m³</span></div>
-              </div>
-              <div style="min-width:0;">
-                <div style="font-size:9px;color:#64748b;text-transform:uppercase;margin-bottom:4px;font-weight:600;letter-spacing:0.4px;white-space:nowrap;">O₃</div>
-                <div style="font-size:11px;font-weight:700;color:#e2e8f0;word-break:break-word;">${realTimeAQI.components.o3} <span style="font-size:9px;color:#94a3b8;font-weight:500">μg/m³</span></div>
-              </div>
-            </div>
+                    // Generate full HTML
+                    popupRef.current.setHTML(`
+            <div style="position:relative; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 0; margin: 0; max-width: 100%; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word;">
+              ${closePopup}
+              <div style="padding: 12px 14px 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.08);">
+                <div style="font-size: 14px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px; letter-spacing: -0.3px;">Location</div>
+                <div style="font-size: 11px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; margin-bottom: 10px; word-break: break-word;">${placeName}</div>
+                <div style="margin-top: 10px;">
+                  <button onclick="(function(){const n=prompt('Save name','Pinned Location'); if(n!==null) window.saveLocation(n, ${lat}, ${lng});})()" style="padding:6px 12px;border-radius:6px;border:none;background:rgba(245, 158, 11, 0.9);color:#fff;cursor:pointer;font-weight:600;font-size:11px;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;transition:all 0.2s;width:100%;box-sizing:border-box;" onmouseover="this.style.background='rgba(245, 158, 11, 1)';this.style.transform='scale(1.02)'" onmouseout="this.style.background='rgba(245, 158, 11, 0.9)';this.style.transform='scale(1)'">⭐ Save</button>
+                </div>
+              </div>
+              ${aqiHtml}
+              <div id="analysis-container" style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 8px 24px rgba(0,0,0,0.6); border-radius: 10px; padding: 12px; margin: 10px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(12px); max-width: calc(100% - 20px); box-sizing: border-box;">
+                <div style="text-align: center; color: #94a3b8;">
+                  <div style="display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(96, 165, 250, 0.3); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px;"></div>
+                  <div style="font-size: 11px; color: #cbd5e1; font-weight: 500; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">Generating AI Analysis...</div>
+                </div>
+              </div>
+            </div>
+            <style>
+              @keyframes spin { to { transform: rotate(360deg); } }
+              .custom-popup { pointer-events: auto !important; }
+                            .custom-popup .maplibregl-popup-content {
+                                background: rgba(15, 23, 42, 0.98) !important;
+                                border: 1px solid rgba(255,255,255,0.15) !important;
+                                border-radius: 12px !important;
+                                box-shadow: 0 12px 40px rgba(0,0,0,0.8) !important;
+                                backdrop-filter: blur(16px) !important;
+                                padding: 0 !important;
+                                /* responsive compact popup sizing */
+                                max-width: 92vw !important;
+                                width: min(320px, 92vw) !important;
+                                min-width: 200px !important;
+                                box-sizing: border-box !important;
+                                overflow: hidden !important;
+                            }
+              .custom-popup .maplibregl-popup-tip {
+                border-top-color: rgba(15, 23, 42, 0.98) !important;
+              }
+            </style>
+          `);
+                }
 
-            <div style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.08);font-size:9px;color:#94a3b8;display:flex;align-items:center;gap:4px;font-weight:500;flex-wrap:wrap;">
-              <svg width="10" height="10" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" opacity="0.3"/><path d="M6 3v3l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.7"/></svg>
-              <span style="word-break:break-word;font-size:9px;">Updated ${realTimeAQI.timestamp}</span>
-            </div>
+                // 7. Trigger AI Analysis (Background)
+                (async () => {
+                    try {
+                        setAnalysisLoading(true);
+                        setUrbanAnalysis(null);
 
-            ${rainHtml}
-            ${worldBankHtml}
-          </div>
-        `;
-            } else if (nearestAQI) {
-                let aqiColor = '#22c55e';
-                if (nearestAQI.value > 50 && nearestAQI.value <= 100) aqiColor = '#eab308';
-                else if (nearestAQI.value > 100 && nearestAQI.value <= 150) aqiColor = '#f97316';
-                else if (nearestAQI.value > 150 && nearestAQI.value <= 200) aqiColor = '#dc2626';
-                else if (nearestAQI.value > 200 && nearestAQI.value <= 300) aqiColor = '#9333ea';
-                else if (nearestAQI.value > 300) aqiColor = '#6b21a8';
+                        const aiData = {
+                            year: y,
+                            zone: placeName,
+                            coordinates: { lat, lng },
+                            people_affected: people,
+                            risk_level: FloodRisk > 0.6 ? "Severe" : FloodRisk > 0.4 ? "Moderate" : "Low",
+                            rainfall_mm: rainfall.toFixed(1),
+                            aqi_realtime: realTimeAQI ? realTimeAQI.aqi : Math.round(AQI),
+                            flood_risk_index: FloodRisk.toFixed(2),
+                            traffic_congestion_index: projectedTraffic.toFixed(2)
+                        };
 
-                aqiHtml = `
-          <div style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 8px 24px rgba(0,0,0,0.6); border-radius:10px; padding:12px; margin:10px; border:1px solid rgba(255,255,255,0.1); backdrop-filter: blur(12px); color:#e2e8f0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
-            <div style="display:flex;align-items:center;justify-content:space-between;">
-              <div style="flex:1">
-                <div style="font-size:9px;color:#94a3b8;text-transform:uppercase;margin-bottom:6px;font-weight:700;letter-spacing:0.6px;">Air Quality Index</div>
-                <div style="display:flex;align-items:baseline;gap:8px;"> <span style="font-size:24px;font-weight:800;color:${aqiColor};font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">${nearestAQI.value}</span><span style="font-size:11px;color:#cbd5e1;font-weight:600">Nearest (${nearestAQI.distance_m}m)</span></div>
-              </div>
-              <div style="width:36px;height:36px;border-radius:10px;background:rgba(255,255,255,0.05);display:flex;align-items:center;justify-content:center;border:1px solid rgba(255,255,255,0.1)">
-                <div style="width:18px;height:18px;border-radius:50%;background:${aqiColor};box-shadow:0 0 12px ${aqiColor}80;"></div>
-              </div>
-            </div>
+                        const metrics = {
+                            aqi: aiData.aqi_realtime,
+                            traffic: parseFloat(aiData.traffic_congestion_index),
+                            weather: `Rainfall: ${aiData.rainfall_mm}mm`
+                        };
 
-            ${rainHtml}
-            ${worldBankHtml}
-          </div>
-        `;
-            } else {
-                aqiHtml = `
-          <div style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 8px 24px rgba(0,0,0,0.6); border-radius: 10px; padding: 14px; margin: 10px; border: 1px solid rgba(255,255,255,0.1); text-align: center; backdrop-filter: blur(12px);">
-            <div style="color: #94a3b8; font-size: 11px; line-height: 1.5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-weight: 500;">
-              ${OPENWEATHER_KEY ? 'AQI data not available for this location' : 'Set VITE_OPENWEATHER_API_KEY for real-time AQI'}
-            </div>
+                        // Fetch analysis
+                        const analysis = await getUrbanAnalysis(aiData, y, metrics);
+                        setUrbanAnalysis(analysis || "No analysis available.");
 
-            ${rainHtml}
-          </div>
-        `;
-            }
+                        // Metrics Extraction
+                        const lossMatch = analysis?.match(/[₹Rs.]\s*([\d,]+(?:\.\d+)?)\s*Cr/i);
+                        if (lossMatch) {
+                            const rawLoss = lossMatch[1].replace(/,/g, '');
+                            const calculatedLoss = Math.round(parseFloat(rawLoss));
+                            setImpactData(prev => ({ ...prev, loss: calculatedLoss }));
+                            try {
+                                setDemographics(calculatePopulationDynamics(y, { loss: calculatedLoss }));
+                            } catch (e) { }
+                        }
 
-            if (popupRef.current && mapRef.current) {
-                const map = mapRef.current;
-                const point = map.project([lng, lat]);
-                const w = map.getContainer().clientWidth;
-                const h = map.getContainer().clientHeight;
-                // Position popup at clicked location - small offset above the point
-                let popupOffset = [0, -10];
-                // Only adjust if popup would go off-screen
-                // If near right edge, shift left
-                if (point.x > w - 180) popupOffset = [-160, -10];
-                // If near left edge, shift right
-                else if (point.x < 180) popupOffset = [160, -10];
-                // If near top, position below
-                if (point.y < 100) popupOffset = [popupOffset[0], 10];
-                // If near bottom, position above (default)
-                else if (point.y > h - 100) popupOffset = [popupOffset[0], -10];
+                        // Update Popup Content
+                        if (popupRef.current && mapRef.current) {
+                            const el = popupRef.current.getElement().querySelector('#analysis-container');
+                            if (el) {
+                                el.innerHTML = `
+                  <div style="font-size: 13px; font-weight: 700; color: #60a5fa; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">🤖 AI Locations Analysis</div>
+                  <div style="font-size: 14px; color: #e2e8f0; line-height: 1.7; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; max-height: 300px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-weight: 400; max-width: 100%; box-sizing: border-box;">${analysis || "No analysis available."}</div>
+                `;
+                            }
+                        }
 
-                const closePopup = `
-          <div
-            style="
-              position:absolute;
-              top:10px;
-              right:12px;
-              cursor:pointer;
-              font-size:16px;
-              color:#94a3b8;
-              font-weight:600;
-              width:24px;
-              height:24px;
-              display:flex;
-              align-items:center;
-              justify-content:center;
-              border-radius:4px;
-              transition:all 0.2s;
-              z-index:1300;
-            "
-            onmouseover="this.style.background='rgba(255,255,255,0.1)';this.style.color='#f1f5f9'"
-            onmouseout="this.style.background='transparent';this.style.color='#94a3b8'"
-            onclick="this.closest('.maplibregl-popup').remove()"
-          >
-            ✕
-          </div>
-        `;
+                    } catch (err) {
+                        console.error("AI Analysis Failed", err);
+                        if (popupRef.current) {
+                            const el = popupRef.current.getElement().querySelector('#analysis-container');
+                            if (el) el.innerHTML = `<div style="color:#ef4444; font-size:11px; text-align:center;">Analysis unavailable</div>`;
+                        }
+                    } finally {
+                        setAnalysisLoading(false);
+                    }
+                })();
 
-                popupRef.current
-                    .setLngLat([lng, lat])
-                    .setHTML(`
-            <div style="position:relative; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 0; margin: 0; max-width: 100%; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word;">
-              ${closePopup}
-              <div style="padding: 12px 14px 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.08);">
-                <div style="font-size: 14px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px; letter-spacing: -0.3px;">Location</div>
-                <div style="font-size: 11px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; margin-bottom: 10px; word-break: break-word;">${placeName}</div>
-                <div style="margin-top: 10px;">
-                  <button onclick="(function(){const n=prompt('Save name','Pinned Location'); if(n!==null) window.saveLocation(n, ${lat}, ${lng});})()" style="padding:6px 12px;border-radius:6px;border:none;background:rgba(245, 158, 11, 0.9);color:#fff;cursor:pointer;font-weight:600;font-size:11px;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;transition:all 0.2s;width:100%;box-sizing:border-box;" onmouseover="this.style.background='rgba(245, 158, 11, 1)';this.style.transform='scale(1.02)'" onmouseout="this.style.background='rgba(245, 158, 11, 0.9)';this.style.transform='scale(1)'">⭐ Save</button>
-                </div>
-              </div>
-              ${aqiHtml}
-              ${!aqiHtml ? worldBankHtml : ""}
-              <div id="analysis-container" style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 8px 24px rgba(0,0,0,0.6); border-radius: 10px; padding: 12px; margin: 10px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(12px); max-width: calc(100% - 20px); box-sizing: border-box;">
-                <div style="text-align: center; color: #94a3b8;">
-                  <div style="display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(96, 165, 250, 0.3); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px;"></div>
-                  <div style="font-size: 11px; color: #cbd5e1; font-weight: 500; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">Generating AI Analysis...</div>
-                </div>
-              </div>
-            </div>
-            <style>
-              @keyframes spin { to { transform: rotate(360deg); } }
-              .custom-popup {
-                pointer-events: auto !important;
-              }
-              .custom-popup .maplibregl-popup-content {
-                background: rgba(15, 23, 42, 0.98) !important;
-                border: 1px solid rgba(255,255,255,0.15) !important;
-                border-radius: 12px !important;
-                box-shadow: 0 12px 40px rgba(0,0,0,0.8) !important;
-                backdrop-filter: blur(16px) !important;
-                padding: 0 !important;
-                max-width: 260px !important;
-                width: 260px !important;
-                min-width: 260px !important;
-                box-sizing: border-box !important;
-                overflow: hidden !important;
-              }
-              .custom-popup .maplibregl-popup-tip {
-                border-top-color: rgba(15, 23, 42, 0.98) !important;
-                border-left-color: rgba(15, 23, 42, 0.98) !important;
-                border-right-color: rgba(15, 23, 42, 0.98) !important;
-                border-bottom-color: rgba(15, 23, 42, 0.98) !important;
-              }
-            </style>
-          `)
-                    .addTo(mapRef.current);
+            } catch (fatalError) {
+                console.error("Fatal error in handleMapClick:", fatalError);
+                if (popupRef.current) {
+                    popupRef.current.setHTML(`<div style="padding:15px; color:#f87171; text-align:center;">Error loading details.</div>`);
+                }
             }
         };
 
