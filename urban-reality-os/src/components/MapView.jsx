@@ -218,6 +218,7 @@ export default function MapView() {
                         rainProbability={null}
                         macroData={worldBank}
                         impact={impact}
+                        demographics={{ population: impact.population, growthRate: 1.6, tfr: 1.9, migrantsPct: 21 }}
                         analysis={urbanAnalysis}
                         analysisLoading={analysisLoading}
                         openWeatherKey={OPENWEATHER_KEY}
@@ -620,8 +621,9 @@ export default function MapView() {
                         rainProbability={null}
                         macroData={null}
                         impact={null}
+                        demographics={null}
                         analysis={null}
-                        analysisLoading={true} // Triggers loading skeleton/spinner
+                        analysisLoading={true}
                         openWeatherKey={OPENWEATHER_KEY}
                         onSave={null}
                     />
@@ -799,8 +801,9 @@ export default function MapView() {
                                     rainProbability={rainProbability}
                                     macroData={macroData}
                                     impact={impact}
-                                    analysis={urbanAnalysis}
-                                    analysisLoading={analysisLoading}
+                                    demographics={demographics}
+                                    analysis={null}
+                                    analysisLoading={true}
                                     openWeatherKey={OPENWEATHER_KEY}
                                     onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
                                 />
@@ -833,6 +836,7 @@ export default function MapView() {
                                         rainProbability={rainProbability}
                                         macroData={macroData}
                                         impact={impact}
+                                        demographics={demographics}
                                         analysis={null}
                                         analysisLoading={true}
                                         openWeatherKey={OPENWEATHER_KEY}
@@ -887,6 +891,7 @@ export default function MapView() {
                                             rainProbability={rainProbability}
                                             macroData={macroData}
                                             impact={impact}
+                                            demographics={demographics}
                                             analysis={analysis || 'No analysis available.'}
                                             analysisLoading={false}
                                             openWeatherKey={OPENWEATHER_KEY}
@@ -915,7 +920,8 @@ export default function MapView() {
                                             rainProbability={rainProbability}
                                             macroData={macroData}
                                             impact={impact}
-                                            analysis={'Analysis unavailable'}
+                                            demographics={demographics}
+                                            analysis={null}
                                             analysisLoading={false}
                                             openWeatherKey={OPENWEATHER_KEY}
                                             onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
@@ -952,6 +958,7 @@ export default function MapView() {
                                 rainProbability={null}
                                 macroData={macroData}
                                 impact={null}
+                                demographics={null}
                                 analysis="Failed to load details"
                                 analysisLoading={false}
                                 openWeatherKey={OPENWEATHER_KEY}
@@ -1342,6 +1349,19 @@ export default function MapView() {
 
         const sessionId = ++popupSessionRef.current;
 
+        // Fly to the selected location
+        if (mapRef.current) {
+            mapRef.current.flyTo({
+                center: [lng, lat],
+                zoom: 14,
+                pitch: 65,
+                bearing: mapRef.current.getBearing(),
+                speed: 0.6,
+                curve: 1.8,
+                essential: true
+            });
+        }
+
         try {
             // Clean up any previous root
             if (popupRootRef.current) {
@@ -1370,16 +1390,30 @@ export default function MapView() {
                     rainProbability={null}
                     macroData={macroDataRef.current}
                     impact={null}
+                    demographics={null}
                     analysis={null}
                     analysisLoading={false}
                     openWeatherKey={OPENWEATHER_KEY}
                     onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
                 />
             );
+
+            // Set activeLocation so year slider updates work
+            setActiveLocation({
+                lat,
+                lng,
+                placeName,
+                baseAQI: IMPACT_MODEL.baseAQI,
+                baseRainfall: 0,
+                baseTraffic: IMPACT_MODEL.baseTraffic,
+                baseFloodRisk: IMPACT_MODEL.baseFloodRisk,
+                worldBank: macroDataRef.current,
+                sessionId
+            });
         } catch (e) {
             console.warn("Search popup render skipped:", e);
         }
-    }, [flyToPoint]);
+    }, []);
 
     /* ================= MOUSE CAMERA CONTROLS ================= */
     // Intercept right-click drag for custom rotation/tilt control
