@@ -24,24 +24,57 @@ export default function MapMenu({ layers, setLayers, mapStyle, setMapStyle, mapR
 
   return (
     <div>
-      {/* Hamburger */}
+      {/* Hamburger Menu Button */}
       <button
         onClick={() => setOpen(!open)}
         style={{
           position: "absolute",
-          top: 12,
-          left: 12,
+          top: 20,
+          left: 20,
           zIndex: 1002,
-          width: 44,
-          height: 44,
-          borderRadius: 8,
+          width: 48,
+          height: 48,
+          borderRadius: 12,
           border: "none",
-          background: "rgba(255,255,255,0.95)",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
-          cursor: "pointer"
+          background: open ? "rgba(2, 6, 23, 0.95)" : "rgba(255, 255, 255, 0.95)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.2)",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "all 0.2s",
+          backdropFilter: "blur(8px)"
+        }}
+        onMouseEnter={(e) => {
+          if (!open) e.target.style.background = "rgba(255, 255, 255, 1)";
+        }}
+        onMouseLeave={(e) => {
+          if (!open) e.target.style.background = "rgba(255, 255, 255, 0.95)";
         }}
       >
-        ☰
+        <svg
+          width="24"
+          height="24"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke={open ? "#fff" : "#1f2937"}
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        >
+          {open ? (
+            <>
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </>
+          ) : (
+            <>
+              <line x1="3" y1="12" x2="21" y2="12" />
+              <line x1="3" y1="6" x2="21" y2="6" />
+              <line x1="3" y1="18" x2="21" y2="18" />
+            </>
+          )}
+        </svg>
       </button>
 
       {/* Side panel */}
@@ -49,17 +82,20 @@ export default function MapMenu({ layers, setLayers, mapStyle, setMapStyle, mapR
         <div
           style={{
             position: "absolute",
-            top: 8,
-            left: 68,
+            top: 20,
+            left: 80,
             zIndex: 1002,
-            width: 340,
-            background: "#fff",
-            borderRadius: 12,
-            boxShadow: "0 12px 40px rgba(2,6,23,0.2)"
+            width: 320,
+            background: "rgba(255, 255, 255, 0.98)",
+            borderRadius: 16,
+            boxShadow: "0 12px 40px rgba(0,0,0,0.3)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,255,255,0.2)",
+            fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
           }}
         >
-          <div style={{ padding: 12 }}>
-            <strong>Account</strong>
+          <div style={{ padding: 20 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 16, color: "#1f2937" }}>Account</div>
 
             {user ? (
               <div>
