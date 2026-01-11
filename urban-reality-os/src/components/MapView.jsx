@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { createRoot } from 'react-dom/client';
 
 import MapMenu from "./MapMenu";
 import LayerToggle from "./LayerToggle";
@@ -13,6 +14,7 @@ import { fetchIndiaMacroData } from "../utils/worldBank";
 import { calculatePopulationDynamics } from "../utils/demographics";
 import { calculateImpactModel } from "../utils/impactModel";
 import { fetchRealtimeAQI } from "../utils/aqi";
+import LocationPopup from "./LocationPopup";
 
 // Constants
 const BASE_YEAR = 2025;
@@ -79,6 +81,7 @@ export default function MapView() {
     const mapContainer = useRef(null);
     const mapRef = useRef(null);
     const popupRef = useRef(null);
+    const popupRootRef = useRef(null);
     const yearRef = useRef(INITIAL_YEAR);
     const floodAnimRef = useRef(null);
     const floodDepthRef = useRef(0);
@@ -115,9 +118,98 @@ export default function MapView() {
     const [demographics, setDemographics] = useState(null);
     const [cityDemo, setCityDemo] = useState(null);
     const [locationPopulation, setLocationPopulation] = useState(null);
+    const [activeLocation, setActiveLocation] = useState(null);
 
     // Sync macroData to ref for usage in callbacks
     useEffect(() => { macroDataRef.current = macroData; }, [macroData]);
+
+    // Recalculate projections when the selected location or year changes
+    useEffect(() => {
+        if (!activeLocation) return;
+
+        const {
+            lat: aLat,
+            lng: aLng,
+            placeName: aPlace,
+            baseAQI,
+            baseRainfall,
+            baseTraffic,
+            baseFloodRisk,
+            worldBank
+        } = activeLocation;
+
+        const yearsElapsed = year - BASE_YEAR;
+        const timeFactor = yearsElapsed / (MAX_YEAR - BASE_YEAR);
+
+        // Project AQI
+        const projectedAQI = Math.round(
+            baseAQI + timeFactor * (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI)
+        );
+
+        // Project Traffic
+        const projectedTraffic = Math.min(
+            1,
+            baseTraffic + timeFactor * 0.5
+        );
+
+        // Project Flood Risk
+        const projectedFloodRisk = Math.min(
+            1,
+            baseFloodRisk + timeFactor * 0.4
+        );
+
+        // Deterministic impact model
+        const impact = calculateImpactModel({
+            year,
+            baseYear: BASE_YEAR,
+            populationBase: worldBank?.population?.value,
+            aqi: projectedAQI,
+            rainfallMm: baseRainfall,
+            trafficCongestion: projectedTraffic,
+            floodRisk: projectedFloodRisk,
+            worldBank
+        });
+
+        setImpactData({
+            zone: `${aPlace} (${year})`,
+            people: impact.peopleAffected,
+            loss: impact.economicLossCr,
+            risk: impact.risk
+        });
+
+        setDemographics({
+            population: impact.population,
+            growthRate: 1.6,
+            tfr: 1.9,
+            migrantsPct: 21
+        });
+
+        // If popup root is mounted, re-render it with updated impact
+        try {
+            if (popupRootRef.current) {
+                popupRootRef.current.render(
+                    <LocationPopup
+                        placeName={aPlace}
+                        lat={aLat}
+                        lng={aLng}
+                        year={year}
+                        baseYear={BASE_YEAR}
+                        realTimeAQI={null}
+                        finalAQI={projectedAQI}
+                        rainfall={baseRainfall}
+                        rainProbability={null}
+                        macroData={worldBank}
+                        impact={impact}
+                        analysis={urbanAnalysis}
+                        analysisLoading={analysisLoading}
+                        openWeatherKey={OPENWEATHER_KEY}
+                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, aLat, aLng); }}
+                    />
+                );
+            }
+        } catch (e) { /* ignore render errors */ }
+
+    }, [year, activeLocation]);
 
     /* ================= MAP INIT ================= */
     useEffect(() => {
@@ -571,6 +663,20 @@ export default function MapView() {
                         tfr: 1.9,
                         migrantsPct: 21
                     });
+
+                    // Save base/reference snapshot for this clicked location
+                    try {
+                        setActiveLocation({
+                            lat,
+                            lng,
+                            placeName,
+                            baseAQI: finalAQI,
+                            baseRainfall: rainfall,
+                            baseTraffic: currentTrafficFactor,
+                            baseFloodRisk: FloodRisk,
+                            worldBank: macroData
+                        });
+                    } catch (e) { /* ignore */ }
                 } catch (err) {
                     console.warn('Demographics calc failed:', err);
                 }
@@ -717,68 +823,77 @@ export default function MapView() {
                     `;
                 }
 
-                // 6. Set Final Popup HTML
-                if (popupRef.current && mapRef.current) {
-                    const map = mapRef.current;
-                    const closePopup = `
-            <div
-              style="position:absolute; top:10px; right:12px; cursor:pointer; font-size:16px; color:#94a3b8; font-weight:600; width:24px; height:24px; display:flex; align-items:center; justify-content:center; border-radius:4px; transition:all 0.2s; z-index:1300;"
-              onmouseover="this.style.background='rgba(255,255,255,0.1)';this.style.color='#f1f5f9'"
-              onmouseout="this.style.background='transparent';this.style.color='#94a3b8'"
-              onclick="this.closest('.maplibregl-popup').remove()"
-            >
-              ✕
-            </div>
-          `;
+                                // 6. Render popup via React component (LocationPopup)
+                                if (popupRef.current && mapRef.current) {
+                                        // Clean up any previous root
+                                        try { if (popupRootRef.current) { popupRootRef.current.unmount(); popupRootRef.current = null; } } catch (e) { /* ignore */ }
 
-                    // Generate full HTML
-                    popupRef.current.setHTML(`
-            <div style="position:relative; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; padding: 0; margin: 0; max-width: 100%; box-sizing: border-box; word-wrap: break-word; overflow-wrap: break-word;">
-              ${closePopup}
-              <div style="padding: 12px 14px 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.08);">
-                <div style="font-size: 14px; font-weight: 700; color: #f1f5f9; margin-bottom: 6px; letter-spacing: -0.3px;">Location</div>
-                <div style="font-size: 11px; color: #94a3b8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; margin-bottom: 10px; word-break: break-word;">${placeName}</div>
-                <div style="margin-top: 10px;">
-                  <button onclick="(function(){const n=prompt('Save name','Pinned Location'); if(n!==null) window.saveLocation(n, ${lat}, ${lng});})()" style="padding:6px 12px;border-radius:6px;border:none;background:rgba(245, 158, 11, 0.9);color:#fff;cursor:pointer;font-weight:600;font-size:11px;font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;transition:all 0.2s;width:100%;box-sizing:border-box;" onmouseover="this.style.background='rgba(245, 158, 11, 1)';this.style.transform='scale(1.02)'" onmouseout="this.style.background='rgba(245, 158, 11, 0.9)';this.style.transform='scale(1)'">⭐ Save</button>
-                </div>
-              </div>
-              ${aqiHtml}
-              <div id="analysis-container" style="background: rgba(15, 23, 42, 0.95); box-shadow: 0 8px 24px rgba(0,0,0,0.6); border-radius: 10px; padding: 12px; margin: 10px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(12px); max-width: calc(100% - 20px); box-sizing: border-box;">
-                <div style="text-align: center; color: #94a3b8;">
-                  <div style="display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(96, 165, 250, 0.3); border-top-color: #60a5fa; border-radius: 50%; animation: spin 0.8s linear infinite; margin-bottom: 8px;"></div>
-                  <div style="font-size: 11px; color: #cbd5e1; font-weight: 500; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">Generating AI Analysis...</div>
-                </div>
-              </div>
-            </div>
-            <style>
-              @keyframes spin { to { transform: rotate(360deg); } }
-              .custom-popup { pointer-events: auto !important; }
-                            .custom-popup .maplibregl-popup-content {
-                                background: rgba(15, 23, 42, 0.98) !important;
-                                border: 1px solid rgba(255,255,255,0.15) !important;
-                                border-radius: 12px !important;
-                                box-shadow: 0 12px 40px rgba(0,0,0,0.8) !important;
-                                backdrop-filter: blur(16px) !important;
-                                padding: 0 !important;
-                                /* responsive compact popup sizing */
-                                max-width: 92vw !important;
-                                width: min(320px, 92vw) !important;
-                                min-width: 200px !important;
-                                box-sizing: border-box !important;
-                                overflow: hidden !important;
-                            }
-              .custom-popup .maplibregl-popup-tip {
-                border-top-color: rgba(15, 23, 42, 0.98) !important;
-              }
-            </style>
-          `);
-                }
+                                        const container = document.createElement('div');
+                                        container.className = 'custom-popup';
+
+                                        // Attach popup to map using DOM container
+                                        popupRef.current.setLngLat([lng, lat]).setDOMContent(container).addTo(mapRef.current);
+
+                                        // Create React root and render LocationPopup
+                                        const root = createRoot(container);
+                                        popupRootRef.current = root;
+                                        root.render(
+                                                <LocationPopup
+                                                        placeName={placeName}
+                                                        lat={lat}
+                                                        lng={lng}
+                                                        year={y}
+                                                        baseYear={BASE_YEAR}
+                                                        realTimeAQI={realTimeAQI}
+                                                        finalAQI={finalAQI}
+                                                        rainfall={rainfall}
+                                                        rainProbability={rainProbability}
+                                                        macroData={macroData}
+                                                        impact={impact}
+                                                        analysis={urbanAnalysis}
+                                                        analysisLoading={analysisLoading}
+                                                        openWeatherKey={OPENWEATHER_KEY}
+                                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                                                />
+                                        );
+
+                                        // Unmount the root when popup closes
+                                        try {
+                                                popupRef.current.on('close', () => {
+                                                        try { if (popupRootRef.current) { popupRootRef.current.unmount(); popupRootRef.current = null; } } catch (e) {}
+                                                });
+                                        } catch (e) { /* ignore if not supported */ }
+                                }
 
                 // 7. Trigger AI Analysis (Background)
                 (async () => {
                     try {
                         setAnalysisLoading(true);
                         setUrbanAnalysis(null);
+                        // show loading state in popup if already mounted
+                        try {
+                            if (popupRootRef.current) {
+                                popupRootRef.current.render(
+                                    <LocationPopup
+                                        placeName={placeName}
+                                        lat={lat}
+                                        lng={lng}
+                                        year={y}
+                                        baseYear={BASE_YEAR}
+                                        realTimeAQI={realTimeAQI}
+                                        finalAQI={finalAQI}
+                                        rainfall={rainfall}
+                                        rainProbability={rainProbability}
+                                        macroData={macroData}
+                                        impact={impact}
+                                        analysis={null}
+                                        analysisLoading={true}
+                                        openWeatherKey={OPENWEATHER_KEY}
+                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                                    />
+                                );
+                            }
+                        } catch (e) { /* ignore */ }
 
                         // Build sanitized payload for AI (explain-only)
                         const aiPayload = {
@@ -798,24 +913,57 @@ export default function MapView() {
                         setUrbanAnalysis(analysis || "No analysis available.");
 
                         // NOTE: Gemini provides explanatory analysis only. Do not overwrite deterministic loss here.
-
-                        // Update Popup Content
-                        if (popupRef.current && mapRef.current) {
-                            const el = popupRef.current.getElement().querySelector('#analysis-container');
-                            if (el) {
-                                el.innerHTML = `
-                  <div style="font-size: 13px; font-weight: 700; color: #60a5fa; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">🤖 AI Locations Analysis</div>
-                  <div style="font-size: 14px; color: #e2e8f0; line-height: 1.7; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; max-height: 300px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-weight: 400; max-width: 100%; box-sizing: border-box;">${analysis || "No analysis available."}</div>
-                `;
+                        // Re-render popup React root (if present) with new analysis
+                        try {
+                            if (popupRootRef.current) {
+                                popupRootRef.current.render(
+                                    <LocationPopup
+                                        placeName={placeName}
+                                        lat={lat}
+                                        lng={lng}
+                                        year={y}
+                                        baseYear={BASE_YEAR}
+                                        realTimeAQI={realTimeAQI}
+                                        finalAQI={finalAQI}
+                                        rainfall={rainfall}
+                                        rainProbability={rainProbability}
+                                        macroData={macroData}
+                                        impact={impact}
+                                        analysis={analysis || 'No analysis available.'}
+                                        analysisLoading={false}
+                                        openWeatherKey={OPENWEATHER_KEY}
+                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                                    />
+                                );
                             }
-                        }
+                        } catch (e) { /* ignore render errors */ }
 
                     } catch (err) {
                         console.error("AI Analysis Failed", err);
-                        if (popupRef.current) {
-                            const el = popupRef.current.getElement().querySelector('#analysis-container');
-                            if (el) el.innerHTML = `<div style="color:#ef4444; font-size:11px; text-align:center;">Analysis unavailable</div>`;
-                        }
+                        setUrbanAnalysis('Analysis unavailable');
+                        try {
+                            if (popupRootRef.current) {
+                                popupRootRef.current.render(
+                                    <LocationPopup
+                                        placeName={placeName}
+                                        lat={lat}
+                                        lng={lng}
+                                        year={y}
+                                        baseYear={BASE_YEAR}
+                                        realTimeAQI={realTimeAQI}
+                                        finalAQI={finalAQI}
+                                        rainfall={rainfall}
+                                        rainProbability={rainProbability}
+                                        macroData={macroData}
+                                        impact={impact}
+                                        analysis={'Analysis unavailable'}
+                                        analysisLoading={false}
+                                        openWeatherKey={OPENWEATHER_KEY}
+                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
+                                    />
+                                );
+                            }
+                        } catch (e) { /* ignore */ }
                     } finally {
                         setAnalysisLoading(false);
                     }
