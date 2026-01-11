@@ -11,6 +11,7 @@ import SearchBar from "./SearchBar";
 import { getUrbanAnalysis } from "../utils/gemini";
 import { fetchIndiaMacroData } from "../utils/worldBank";
 import { calculatePopulationDynamics } from "../utils/demographics";
+import { calculateEconomicLoss } from "../utils/economicLoss";
 
 // Constants
 const INITIAL_YEAR = 2025;
@@ -629,20 +630,28 @@ export default function MapView() {
                     800 + 110 * AQI + 12000 * FloodRisk + 9000 * projectedTraffic + 0.03 * Pop
                 );
 
-                // 4. Update UI - Sidebar (Impact Panel)
+                // 4. Calculate economic loss (deterministic) and update UI immediately
+                const economicLoss = calculateEconomicLoss({
+                    aqi: AQI,
+                    rainfallMm: rainfall,
+                    floodRisk: FloodRisk,
+                    trafficCongestion: projectedTraffic,
+                    worldBank: macroData
+                });
+
                 setImpactData({
                     zone: `${placeName} (${y})`,
                     people,
-                    loss: null, // Will be calculated by Gemini AI
+                    loss: economicLoss, // Deterministic estimate (₹ Cr)
                     risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡"
                 });
 
                 setLocationPopulation(null); // Reset population detail logic
 
-                // Calculate Demographics (Initial)
+                // Calculate Demographics (Initial) using deterministic loss
                 let demoStats = null;
                 try {
-                    demoStats = calculatePopulationDynamics(y, { loss: null });
+                    demoStats = calculatePopulationDynamics(y, { loss: economicLoss });
                     setDemographics(demoStats);
                 } catch (err) {
                     console.warn('Demographics calc failed:', err);
@@ -862,29 +871,27 @@ export default function MapView() {
                             rainfall_mm: rainfall.toFixed(1),
                             aqi_realtime: realTimeAQI ? realTimeAQI.aqi : Math.round(AQI),
                             flood_risk_index: FloodRisk.toFixed(2),
-                            traffic_congestion_index: projectedTraffic.toFixed(2)
+                            traffic_congestion_index: projectedTraffic.toFixed(2),
+                            economic_loss_cr: economicLoss,
+                            macro: {
+                                population: macroData?.population?.value,
+                                gdp_per_capita: macroData?.gdpPerCapita?.value,
+                                urban_pct: macroData?.urbanPct?.value
+                            }
                         };
 
                         const metrics = {
                             aqi: aiData.aqi_realtime,
                             traffic: parseFloat(aiData.traffic_congestion_index),
-                            weather: `Rainfall: ${aiData.rainfall_mm}mm`
+                            weather: `Rainfall: ${aiData.rainfall_mm}mm`,
+                            loss: economicLoss
                         };
 
                         // Fetch analysis
                         const analysis = await getUrbanAnalysis(aiData, y, metrics);
                         setUrbanAnalysis(analysis || "No analysis available.");
 
-                        // Metrics Extraction
-                        const lossMatch = analysis?.match(/[₹Rs.]\s*([\d,]+(?:\.\d+)?)\s*Cr/i);
-                        if (lossMatch) {
-                            const rawLoss = lossMatch[1].replace(/,/g, '');
-                            const calculatedLoss = Math.round(parseFloat(rawLoss));
-                            setImpactData(prev => ({ ...prev, loss: calculatedLoss }));
-                            try {
-                                setDemographics(calculatePopulationDynamics(y, { loss: calculatedLoss }));
-                            } catch (e) { }
-                        }
+                        // NOTE: Gemini provides explanatory analysis only. Do not overwrite deterministic loss here.
 
                         // Update Popup Content
                         if (popupRef.current && mapRef.current) {
