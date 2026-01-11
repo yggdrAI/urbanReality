@@ -8,21 +8,24 @@ const GOOGLE_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID;
 
 const root = ReactDOM.createRoot(document.getElementById("root"));
 
-if (!GOOGLE_ID) {
-  root.render(
-    <div style={{ padding: 20, fontFamily: "sans-serif", color: "red" }}>
-      ❌ Missing <b>VITE_GOOGLE_CLIENT_ID</b> <br />
-      Check your <code>.env</code> file and restart Vite.
-    </div>
-  );
-} else {
-  root.render(
-    <React.StrictMode>
+// Always render the app - Google OAuth is optional
+const AppWrapper = ({ children }) => {
+  if (GOOGLE_ID) {
+    return (
       <GoogleOAuthProvider clientId={GOOGLE_ID}>
-        <AuthProvider>
-          <MapView />
-        </AuthProvider>
+        {children}
       </GoogleOAuthProvider>
-    </React.StrictMode>
-  );
-}
+    );
+  }
+  return children;
+};
+
+root.render(
+  <React.StrictMode>
+    <AppWrapper>
+      <AuthProvider>
+        <MapView />
+      </AuthProvider>
+    </AppWrapper>
+  </React.StrictMode>
+);

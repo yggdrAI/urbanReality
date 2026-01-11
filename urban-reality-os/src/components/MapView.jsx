@@ -115,12 +115,8 @@ export default function MapView() {
   const [cityDemo, setCityDemo] = useState(null);
   const [alerts, setAlerts] = useState([]);
 
-  const { token, user } = useAuth();
-
-  // Lock map UI until authenticated
-  if (!token) {
-    return <AuthModal />;
-  }
+  const { token, user, logout } = useAuth();
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
 
   /* ================= MAP INIT ================= */
@@ -2083,6 +2079,92 @@ export default function MapView() {
           🌊 {floodMode ? "Stop" : "Start"} Flood Animation
         </button>
       </div>
+
+      {/* Optional Login Button */}
+      {!token && (
+        <div
+          style={{
+            position: "absolute",
+            top: 20,
+            right: 20,
+            zIndex: 100,
+          }}
+        >
+          <button
+            onClick={() => setShowAuthModal(true)}
+            style={{
+              padding: "10px 20px",
+              borderRadius: 8,
+              border: "none",
+              background: "rgba(2, 6, 23, 0.9)",
+              color: "#fff",
+              cursor: "pointer",
+              fontSize: 14,
+              fontWeight: 500,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+              backdropFilter: "blur(8px)",
+              fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+            }}
+            onMouseEnter={(e) => {
+              e.target.style.background = "rgba(2, 6, 23, 0.95)";
+            }}
+            onMouseLeave={(e) => {
+              e.target.style.background = "rgba(2, 6, 23, 0.9)";
+            }}
+          >
+            🔐 Sign In
+          </button>
+        </div>
+      )}
+
+      {/* User Account Button (when logged in) */}
+      {token && user && (
+        <div
+          style={{
+            position: "absolute",
+            top: 20,
+            right: 20,
+            zIndex: 100,
+          }}
+        >
+          <div
+            style={{
+              padding: "8px 16px",
+              borderRadius: 8,
+              background: "rgba(2, 6, 23, 0.9)",
+              color: "#fff",
+              fontSize: 13,
+              backdropFilter: "blur(8px)",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif"
+            }}
+          >
+            <span>👤 {user.name || user.email}</span>
+            <button
+              onClick={logout}
+              style={{
+                padding: "4px 12px",
+                borderRadius: 6,
+                border: "none",
+                background: "rgba(255,255,255,0.1)",
+                color: "#fff",
+                cursor: "pointer",
+                fontSize: 12
+              }}
+            >
+              Logout
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Auth Modal (only shown when showAuthModal is true) */}
+      {showAuthModal && (
+        <AuthModal onClose={() => setShowAuthModal(false)} />
+      )}
 
       <EconomicPanel data={impactData} demographics={demographics} analysis={urbanAnalysis} analysisLoading={analysisLoading} />
       <CitySuggestions map={mapRef.current} visible={showSuggestions} />
