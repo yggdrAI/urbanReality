@@ -11,6 +11,8 @@ import SearchBar from "./SearchBar";
 import { getUrbanAnalysis } from "../utils/gemini";
 import { fetchIndiaMacroData } from "../utils/worldBank";
 import { calculatePopulationDynamics } from "../utils/demographics";
+import { useAuth } from "../context/AuthContext";
+import AuthModal from "./AuthModal";
 
 // Constants
 const INITIAL_YEAR = 2025;
@@ -110,11 +112,19 @@ export default function MapView() {
   const [macroData, setMacroData] = useState(null);
   const [demographics, setDemographics] = useState(null);
   const [cityDemo, setCityDemo] = useState(null);
+  const [alerts, setAlerts] = useState([]);
+
+  const { token, user } = useAuth();
+
+  // Lock map UI until authenticated
+  if (!token) {
+    return <AuthModal />;
+  }
 
 
   /* ================= MAP INIT ================= */
   useEffect(() => {
-    if (mapRef.current) return;
+    if (!mapContainer.current || mapRef.current) return;
 
     let isMounted = true;
 
@@ -399,20 +409,24 @@ export default function MapView() {
         }
 
         /* ===== 3D BUILDINGS ===== */
-        if (isMounted) {
-          map.addLayer({
-            id: "3d-buildings",
-            source: "openmaptiles",
-            "source-layer": "building",
-            type: "fill-extrusion",
-            minzoom: 14,
-            paint: {
-              "fill-extrusion-color": "#cbd5e1",
-              "fill-extrusion-height": ["get", "render_height"],
-              "fill-extrusion-base": ["get", "render_min_height"],
-              "fill-extrusion-opacity": 0.9
-            }
-          });
+        if (isMounted && map.getSource && map.getSource("openmaptiles")) {
+          try {
+            map.addLayer({
+              id: "3d-buildings",
+              source: "openmaptiles",
+              "source-layer": "building",
+              type: "fill-extrusion",
+              minzoom: 14,
+              paint: {
+                "fill-extrusion-color": "#cbd5e1",
+                "fill-extrusion-height": ["get", "render_height"],
+                "fill-extrusion-base": ["get", "render_min_height"],
+                "fill-extrusion-opacity": 0.9
+              }
+            });
+          } catch (e) {
+            console.warn('Could not add 3d-buildings layer:', e);
+          }
         }
 
         if (isMounted) setLoading(false);
@@ -971,6 +985,9 @@ export default function MapView() {
               <div style="padding: 20px 20px 16px 20px;">
                 <div style="font-size: 14px; font-weight: 600; color: #f1f5f9; margin-bottom: 4px;">Location</div>
                 <div style="font-size: 12px; color: #94a3b8; font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;">${lat.toFixed(4)}, ${lng.toFixed(4)}</div>
+                  <div style="margin-top:8px;">
+                    <button onclick="(function(){const n=prompt('Save name','Pinned Location'); if(n!==null) window.saveLocation(n, ${lat}, ${lng});})()" style="padding:8px 10px;border-radius:8px;border:none;background:#f59e0b;color:#fff;cursor:pointer;">⭐ Save</button>
+                  </div>
               </div>
               ${aqiHtml}
               ${!aqiHtml ? worldBankHtml : ""}
@@ -1007,6 +1024,69 @@ export default function MapView() {
       }
     };
   }, []);
+
+  // Expose saveLocation for popup buttons
+  useEffect(() => {
+    window.saveLocation = async (name, lat, lng) => {
+      try {
+        const resp = await fetch((import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000') + '/api/user/save-location', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
+          body: JSON.stringify({ name: name || 'Pinned Location', lat, lng })
+        });
+        if (!resp.ok) throw new Error('Save failed');
+        const json = await resp.json();
+        alert('Location saved');
+        // Add marker immediately
+        if (mapRef.current) {
+          const m = new maplibregl.Marker({ color: '#f59e0b' }).setLngLat([lng, lat]).addTo(mapRef.current);
+        }
+        return true;
+      } catch (err) {
+        console.error('saveLocation error', err);
+        alert('Could not save location');
+        return false;
+      }
+    };
+
+    return () => { delete window.saveLocation; };
+  }, []);
+
+  // Load saved locations when user profile is available
+  useEffect(() => {
+    if (!user || !mapRef.current) return;
+    try {
+      (user.savedLocations || []).forEach(loc => {
+        try {
+          new maplibregl.Marker({ color: '#f97316' }).setLngLat([loc.lng, loc.lat]).addTo(mapRef.current);
+        } catch (e) {}
+      });
+    } catch (e) {
+      console.warn('Could not load saved locations', e);
+    }
+  }, [user]);
+
+  // Poll alerts every minute when authenticated
+  useEffect(() => {
+    if (!token) return;
+    let mounted = true;
+    const fetchAlerts = async () => {
+      try {
+        const r = await fetch((import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000') + '/api/user/alerts', {
+          headers: { Authorization: `Bearer ${localStorage.getItem('token')}` }
+        });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (mounted) setAlerts(j.alerts || []);
+      } catch (e) {
+        console.warn('Could not fetch alerts', e);
+      }
+    };
+
+    fetchAlerts();
+    const id = setInterval(fetchAlerts, 60000);
+    return () => { mounted = false; clearInterval(id); };
+  }, [token]);
 
   /* ================= YEAR SYNC ================= */
   useEffect(() => {
@@ -1613,7 +1693,7 @@ export default function MapView() {
         </div>
       )}
 
-      <MapMenu layers={layers} setLayers={setLayers} mapStyle={mapStyle} setMapStyle={setMapStyle} />
+      <MapMenu layers={layers} setLayers={setLayers} mapStyle={mapStyle} setMapStyle={setMapStyle} mapRef={mapRef} />
       <LayerToggle layers={layers} setLayers={setLayers} />
       <SearchBar mapRef={mapRef} onLocationSelect={handleLocationSelect} />
       <TimeSlider year={year} setYear={setYear} />

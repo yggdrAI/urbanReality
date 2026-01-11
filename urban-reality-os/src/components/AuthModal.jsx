@@ -1,0 +1,89 @@
+import { useState } from "react";
+import { GoogleLogin } from "@react-oauth/google";
+import { useAuth } from "../context/AuthContext";
+
+export default function AuthModal() {
+  const { login } = useAuth();
+  const [isLogin, setIsLogin] = useState(true);
+  const [form, setForm] = useState({ name: "", email: "", password: "" });
+
+  const submit = async () => {
+    const url = isLogin ? "/api/auth/login" : "/api/auth/signup";
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(form)
+    });
+    const data = await res.json();
+    if (data.token) login(data.token);
+  };
+
+  return (
+    <div style={overlay}>
+      <div style={card}>
+        <h2>{isLogin ? "Login" : "Create Account"}</h2>
+
+        {!isLogin && (
+          <input
+            placeholder="Name"
+            onChange={e => setForm({ ...form, name: e.target.value })}
+          />
+        )}
+
+        <input
+          placeholder="Email"
+          onChange={e => setForm({ ...form, email: e.target.value })}
+        />
+
+        <input
+          type="password"
+          placeholder="Password"
+          onChange={e => setForm({ ...form, password: e.target.value })}
+        />
+
+        <button onClick={submit}>
+          {isLogin ? "Login" : "Sign up"}
+        </button>
+
+        <GoogleLogin
+          onSuccess={async res => {
+            const r = await fetch("/api/auth/google", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ token: res.credential })
+            });
+            const data = await r.json();
+            login(data.token);
+          }}
+        />
+
+        <p
+          style={{ cursor: "pointer", marginTop: 10 }}
+          onClick={() => setIsLogin(!isLogin)}
+        >
+          {isLogin ? "Create account" : "Already have an account?"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const overlay = {
+  position: "fixed",
+  inset: 0,
+  background: "rgba(0,0,0,0.6)",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  zIndex: 9999
+};
+
+const card = {
+  background: "#fff",
+  padding: 24,
+  borderRadius: 10,
+  width: 320,
+  display: "flex",
+  flexDirection: "column",
+  gap: 10
+};

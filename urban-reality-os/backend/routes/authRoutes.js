@@ -2,6 +2,9 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User from "../models/User.js";
+import { OAuth2Client } from "google-auth-library";
+
+const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 const router = express.Router();
 
@@ -45,4 +48,28 @@ router.post("/login", async (req, res) => {
   }
 });
 
+// GOOGLE OAUTH
+router.post("/google", async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ msg: 'Missing token' });
+
+    const ticket = await googleClient.verifyIdToken({ idToken: token, audience: process.env.GOOGLE_CLIENT_ID });
+    const payload = ticket.getPayload();
+    const { email, name } = payload;
+
+    let user = await User.findOne({ email });
+    if (!user) {
+      user = await User.create({ email, name, password: Math.random().toString(36).slice(2) });
+    }
+
+    const jwtToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: '30d' });
+    res.json({ token: jwtToken, user: { id: user._id, name: user.name, email: user.email } });
+  } catch (err) {
+    console.error('google auth error', err);
+    res.status(500).json({ msg: 'Google auth failed' });
+  }
+});
+
 export default router;
+

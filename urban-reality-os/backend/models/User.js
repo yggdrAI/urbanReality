@@ -8,6 +8,14 @@ const userSchema = new mongoose.Schema({
     lat: Number,
     lng: Number
   },
+  savedLocations: [
+    {
+      name: String,
+      lat: Number,
+      lng: Number,
+      createdAt: { type: Date, default: Date.now }
+    }
+  ],
   createdAt: { type: Date, default: Date.now }
 });
 
