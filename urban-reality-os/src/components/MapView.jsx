@@ -576,25 +576,35 @@ export default function MapView() {
                     .addTo(mapRef.current);
             }
 
-            // Fetch real-time AQI first
+            // Fetch real-time AQI first (with timeout)
             let realTimeAQI = null;
             if (OPENWEATHER_KEY) {
-                realTimeAQI = await fetchAQI(lat, lng);
+                try {
+                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000));
+                    realTimeAQI = await Promise.race([fetchAQI(lat, lng), timeout]);
+                } catch (e) {
+                    console.warn("AQI fetch timed out or failed", e);
+                }
             }
 
             // Calculate time factor for future projections
             const yearsElapsed = y - MIN_YEAR;
             const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
 
-            // 🌧 Fetch real-time rainfall (Open-Meteo)
+            // 🌧 Fetch real-time rainfall (Open-Meteo) (with timeout)
             let rainfall = 0;
             let rainProbability = 0;
 
-            const rainData = await fetchRainfall(lat, lng);
-            if (rainData) {
-                rainfall = rainData.rain; // mm
-                rainProbability = rainData.probability; // %
-                rainfallRef.current = rainfall; // Store for flood animation
+            try {
+                const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000));
+                const rainData = await Promise.race([fetchRainfall(lat, lng), timeout]);
+                if (rainData) {
+                    rainfall = rainData.rain; // mm
+                    rainProbability = rainData.probability; // %
+                    rainfallRef.current = rainfall; // Store for flood animation
+                }
+            } catch (e) {
+                console.warn("Rainfall fetch timed out", e);
             }
 
             // Build rain HTML (integrated inside AQI card) - MUST be defined before aqiHtml
@@ -665,9 +675,11 @@ export default function MapView() {
 
             try {
                 if (TOMTOM_KEY) {
-                    const response = await fetch(
-                        `https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${TOMTOM_KEY}&point=${lat},${lng}`
-                    );
+                    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout')), 3000));
+                    const response = await Promise.race([
+                        fetch(`https://api.tomtom.com/traffic/services/4/flowSegmentData/absolute/10/json?key=${TOMTOM_KEY}&point=${lat},${lng}`),
+                        timeout
+                    ]);
 
                     if (response.ok) {
                         const data = await response.json();
@@ -772,13 +784,20 @@ export default function MapView() {
                         }
                     };
 
-                    const analysis = await getUrbanAnalysis(aiData, y);
+                    const metrics = {
+                        aqi: aiData.aqi_realtime,
+                        traffic: parseFloat(aiData.traffic_congestion_index),
+                        floodDepth: floodDepthRef.current || 0,
+                        weather: `Rainfall: ${aiData.rainfall_mm}mm`
+                    };
+                    const analysis = await getUrbanAnalysis(aiData, y, metrics);
                     setUrbanAnalysis(analysis || "No analysis available.");
 
                     // Extract population, economic loss and people affected from Gemini's analysis
-                    // Format: "Population: [X] people. AQI [value] affects [Y] people, causes ₹[Z] Cr economic loss."
+                    // Format: "Real-Time Loss: ₹[Amount] Cr. Population: [X] people."
                     const populationMatch = analysis?.match(/Population:\s*([\d,]+)\s+people/i);
-                    const lossMatch = analysis?.match(/₹\s*(\d+(?:\.\d+)?)\s*Cr/i);
+                    // Robust regex for currency: Matches ₹ 1,200 Cr, ₹1200 Cr, etc.
+                    const lossMatch = analysis?.match(/[₹Rs.]\s*([\d,]+(?:\.\d+)?)\s*Cr/i);
                     const peopleMatch = analysis?.match(/affects\s+([\d,]+)\s+people/i);
 
                     // Extract and set population
@@ -788,7 +807,9 @@ export default function MapView() {
                     }
 
                     if (lossMatch) {
-                        const calculatedLoss = Math.round(parseFloat(lossMatch[1]));
+                        // Remove commas and parse
+                        const rawLoss = lossMatch[1].replace(/,/g, '');
+                        const calculatedLoss = Math.round(parseFloat(rawLoss));
                         const affectedPeople = peopleMatch ? parseInt(peopleMatch[1].replace(/,/g, '')) : people;
 
                         setImpactData(prev => ({
@@ -803,6 +824,9 @@ export default function MapView() {
                         } catch (err) {
                             console.warn('Demographics recalculation failed:', err);
                         }
+                    } else {
+                        // If AI fails to return strict format, try to infer or keep old values
+                        console.warn("Could not parse Economic Loss from AI analysis:", analysis);
                     }
 
                     // Update popup with analysis
@@ -811,9 +835,9 @@ export default function MapView() {
                         const analysisContainer = popupElement?.querySelector('#analysis-container');
                         if (analysisContainer) {
                             analysisContainer.innerHTML = `
-                <div style="font-size: 13px; font-weight: 700; color: #60a5fa; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">🤖 AI Location Analysis</div>
-                <div style="font-size: 14px; color: #e2e8f0; line-height: 1.7; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; max-height: 300px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-weight: 400; max-width: 100%; box-sizing: border-box;">${analysis || "No analysis available."}</div>
-              `;
+                <div style="font-size: 13px; font-weight: 700; color: #60a5fa; margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">🤖 AI Location Analysis</div>
+                <div style="font-size: 14px; color: #e2e8f0; line-height: 1.7; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; max-height: 300px; overflow-y: auto; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; font-weight: 400; max-width: 100%; box-sizing: border-box;">${analysis || "No analysis available."}</div>
+              `;
                         }
                     }
                 } catch (err) {
@@ -1738,7 +1762,7 @@ export default function MapView() {
             )}
 
             <MapMenu layers={layers} setLayers={setLayers} mapStyle={mapStyle} setMapStyle={setMapStyle} mapRef={mapRef} />
-            <LayerToggle layers={layers} setLayers={setLayers} />
+
             <SearchBar mapRef={mapRef} onLocationSelect={handleLocationSelect} />
             <TimeSlider year={year} setYear={setYear} />
 

@@ -44,7 +44,7 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
       if (!response.ok) throw new Error("Geocoding failed");
 
       const data = await response.json();
-      
+
       if (data.features && data.features.length > 0) {
         setSuggestions(data.features);
         setShowSuggestions(true);
@@ -117,18 +117,20 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
           position: "relative",
           display: "flex",
           alignItems: "center",
-          background: "#fff",
+          background: "rgba(15, 23, 42, 0.95)", // Dark background
           borderRadius: "24px",
-          boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
           transition: "box-shadow 0.2s",
+          border: "1px solid rgba(255,255,255,0.1)",
+          backdropFilter: "blur(8px)"
         }}
         onFocus={() => {
           const input = document.getElementById("search-input");
-          if (input) input.parentElement.style.boxShadow = "0 4px 12px rgba(0,0,0,0.3)";
+          if (input) input.parentElement.style.boxShadow = "0 6px 16px rgba(0,0,0,0.5)";
         }}
         onBlur={() => {
           const input = document.getElementById("search-input");
-          if (input) input.parentElement.style.boxShadow = "0 2px 8px rgba(0,0,0,0.2)";
+          if (input) input.parentElement.style.boxShadow = "0 4px 12px rgba(0,0,0,0.4)";
         }}
       >
         {/* Search Icon */}
@@ -137,7 +139,7 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
             padding: "0 16px",
             display: "flex",
             alignItems: "center",
-            color: "#5f6368",
+            color: "#94a3b8",
           }}
         >
           <svg
@@ -169,8 +171,9 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
             outline: "none",
             padding: "12px 8px",
             fontSize: "15px",
-            color: "#202124",
+            color: "#f8fafc",
             background: "transparent",
+            "placeholder": { color: "#64748b" }
           }}
         />
 
@@ -183,7 +186,7 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
               border: "none",
               background: "transparent",
               cursor: "pointer",
-              color: "#5f6368",
+              color: "#94a3b8",
               display: "flex",
               alignItems: "center",
             }}
@@ -218,8 +221,8 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
               style={{
                 width: "16px",
                 height: "16px",
-                border: "2px solid #e0e0e0",
-                borderTopColor: "#4285f4",
+                border: "2px solid #94a3b8",
+                borderTopColor: "#3b82f6",
                 borderRadius: "50%",
                 animation: "spin 0.8s linear infinite",
               }}
@@ -238,9 +241,11 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
             left: 0,
             right: 0,
             marginTop: "8px",
-            background: "#fff",
-            borderRadius: "8px",
-            boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+            background: "rgba(15, 23, 42, 0.98)", // Dark
+            borderRadius: "12px",
+            boxShadow: "0 12px 40px rgba(0,0,0,0.5)",
+            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,255,255,0.1)",
             maxHeight: "400px",
             overflowY: "auto",
             zIndex: 1000,
@@ -253,24 +258,24 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
               style={{
                 padding: "12px 16px",
                 cursor: "pointer",
-                borderBottom: index < suggestions.length - 1 ? "1px solid #e0e0e0" : "none",
+                borderBottom: index < suggestions.length - 1 ? "1px solid rgba(255,255,255,0.05)" : "none",
                 display: "flex",
                 alignItems: "flex-start",
                 gap: "12px",
                 transition: "background 0.15s",
               }}
               onMouseEnter={(e) => {
-                e.currentTarget.style.background = "#f5f5f5";
+                e.currentTarget.style.background = "rgba(255,255,255,0.1)";
               }}
               onMouseLeave={(e) => {
-                e.currentTarget.style.background = "#fff";
+                e.currentTarget.style.background = "transparent";
               }}
             >
               {/* Location Icon */}
               <div
                 style={{
                   paddingTop: "2px",
-                  color: "#5f6368",
+                  color: "#94a3b8",
                   flexShrink: 0,
                 }}
               >
@@ -294,7 +299,7 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
                 <div
                   style={{
                     fontSize: "15px",
-                    color: "#202124",
+                    color: "#f8fafc",
                     fontWeight: 500,
                     marginBottom: "2px",
                     whiteSpace: "nowrap",
@@ -307,7 +312,7 @@ export default function SearchBar({ mapRef, onLocationSelect }) {
                 <div
                   style={{
                     fontSize: "13px",
-                    color: "#5f6368",
+                    color: "#94a3b8",
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",

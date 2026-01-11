@@ -4,12 +4,12 @@
 
 const API_BASE = import.meta.env.VITE_GEMINI_BACKEND_URL || "http://localhost:3001";
 
-export const getUrbanAnalysis = async (data, year) => {
+export const getUrbanAnalysis = async (data, year, metrics) => {
   try {
     const resp = await fetch(`${API_BASE}/api/urban-analysis`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ data, year })
+      body: JSON.stringify({ data, year, metrics })
     });
 
     if (!resp.ok) {
