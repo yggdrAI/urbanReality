@@ -19,7 +19,8 @@ export default function LayerToggle({ layers, setLayers }) {
         zIndex: 10,
         backdropFilter: "blur(8px)",
         boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
-        minWidth: 160
+        minWidth: 160,
+        maxWidth: 180
       }}
     >
       <strong style={{ display: "block", marginBottom: 8 }}>Layers</strong>

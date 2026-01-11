@@ -6,6 +6,7 @@ import LayerToggle from "./LayerToggle";
 import EconomicPanel from "./EconomicPanel";
 import CitySuggestions from "./CitySuggestions";
 import TimeSlider from "./TimeSlider";
+import SearchBar from "./SearchBar";
 import { getUrbanAnalysis } from "../utils/gemini";
 
 // Constants
@@ -1225,6 +1226,35 @@ export default function MapView() {
     });
   }, []);
 
+  /* ================= HANDLE LOCATION SEARCH ================= */
+  const handleLocationSelect = useCallback((lng, lat, placeName) => {
+    if (!mapRef.current) return;
+
+    // Fly to the selected location
+    flyToPoint(lng, lat, 14, 65, mapRef.current.getBearing());
+
+    // Optional: Create a marker or popup at the location
+    if (popupRef.current) {
+      popupRef.current
+        .setLngLat([lng, lat])
+        .setHTML(`
+          <div style="
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto;
+            padding: 12px;
+            color: #202124;
+          ">
+            <div style="font-weight: 600; font-size: 14px; margin-bottom: 4px;">
+              ${placeName}
+            </div>
+            <div style="font-size: 12px; color: #5f6368;">
+              ${lat.toFixed(4)}, ${lng.toFixed(4)}
+            </div>
+          </div>
+        `)
+        .addTo(mapRef.current);
+    }
+  }, [flyToPoint]);
+
   /* ================= MOUSE CAMERA CONTROLS ================= */
   // Intercept right-click drag for custom rotation/tilt control
   useEffect(() => {
@@ -1466,6 +1496,7 @@ export default function MapView() {
       )}
 
       <LayerToggle layers={layers} setLayers={setLayers} />
+      <SearchBar mapRef={mapRef} onLocationSelect={handleLocationSelect} />
       <TimeSlider year={year} setYear={setYear} />
 
       {/* Google Maps-style Layers Menu - Bottom Left */}
@@ -1775,7 +1806,7 @@ export default function MapView() {
         style={{
           position: "absolute",
           top: 20,
-          left: 320,
+          left: 620, // Moved right to avoid overlapping with search bar (200 + 400 width + 20 gap)
           zIndex: 10,
           display: "flex",
           gap: 10
