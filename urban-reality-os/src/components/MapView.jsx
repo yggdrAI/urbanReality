@@ -76,6 +76,7 @@ export default function MapView() {
   const floodAnimRef = useRef(null);
   const floodDepthRef = useRef(0);
   const flyThroughTimeoutsRef = useRef([]);
+  const rainfallRef = useRef(0); // Store current rainfall for flood animation
 
   const [year, setYear] = useState(INITIAL_YEAR);
   const [impactData, setImpactData] = useState(null);
@@ -470,6 +471,28 @@ export default function MapView() {
       }
     };
 
+    /* ===== OPEN-METEO (RAIN + FLOOD SIGNAL) ===== */
+    const fetchRainfall = async (lat, lng) => {
+      try {
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&hourly=rain,precipitation_probability&forecast_days=1`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("Open-Meteo error");
+
+        const data = await res.json();
+
+        const rainNow = data.hourly?.rain?.[0] ?? 0; // mm
+        const rainProb = data.hourly?.precipitation_probability?.[0] ?? 0; // %
+
+        return {
+          rain: rainNow,
+          probability: rainProb
+        };
+      } catch (err) {
+        console.warn("Open-Meteo fetch failed:", err);
+        return null;
+      }
+    };
+
     /* ===== AI IMPACT MODEL ===== */
     const handleMapClick = async (e) => {
       if (!mapRef.current) return;
@@ -519,6 +542,55 @@ export default function MapView() {
       const yearsElapsed = y - MIN_YEAR;
       const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
 
+      // 🌧 Fetch real-time rainfall (Open-Meteo)
+      let rainfall = 0;
+      let rainProbability = 0;
+
+      const rainData = await fetchRainfall(lat, lng);
+      if (rainData) {
+        rainfall = rainData.rain; // mm
+        rainProbability = rainData.probability; // %
+        rainfallRef.current = rainfall; // Store for flood animation
+      }
+
+      // Build rain HTML (integrated inside AQI card) - MUST be defined before aqiHtml
+      const rainHtml = `
+        <div style="
+          margin-top: 10px;
+          padding-top: 10px;
+          border-top: 1px solid rgba(255,255,255,0.04);
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+          font-size: 12px;
+          color: #cbd5f5;
+        ">
+          <div style="
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            padding: 8px 10px;
+            display:flex;
+            align-items:center;
+            gap:8px;
+          ">
+            🌧 <span>Rainfall</span>
+            <b style="margin-left:auto;color:#60a5fa">${rainfall.toFixed(1)} mm</b>
+          </div>
+
+          <div style="
+            background: rgba(255,255,255,0.03);
+            border-radius: 8px;
+            padding: 8px 10px;
+            display:flex;
+            align-items:center;
+            gap:8px;
+          ">
+            ☔ <span>Probability</span>
+            <b style="margin-left:auto;color:#38bdf8">${rainProbability}%</b>
+          </div>
+        </div>
+      `;
+
       // 1. Fetch Real Traffic Data for this point
       let currentTrafficFactor = IMPACT_MODEL.baseTraffic; 
       
@@ -549,7 +621,18 @@ export default function MapView() {
 
       // Use real-time AQI if available, otherwise use model
       const AQI = realTimeAQI ? realTimeAQI.aqi : (IMPACT_MODEL.baseAQI + (IMPACT_MODEL.maxAQI - IMPACT_MODEL.baseAQI) * timeFactor);
-      const FloodRisk = IMPACT_MODEL.baseFloodRisk + (IMPACT_MODEL.maxFloodRisk - IMPACT_MODEL.baseFloodRisk) * timeFactor;
+      
+      // Flood risk influenced by rainfall + future projection
+      const rainFactor = Math.min(rainfall / 20, 1); // 20mm+ = severe
+      const rainProbFactor = rainProbability / 100;
+
+      const FloodRisk = Math.min(
+        1,
+        IMPACT_MODEL.baseFloodRisk +
+        (IMPACT_MODEL.maxFloodRisk - IMPACT_MODEL.baseFloodRisk) * timeFactor +
+        rainFactor * 0.4 +
+        rainProbFactor * 0.2
+      );
       const Pop = IMPACT_MODEL.basePopulation + IMPACT_MODEL.populationGrowth * timeFactor;
 
       const people = Math.round(
@@ -572,7 +655,15 @@ export default function MapView() {
         try {
           setAnalysisLoading(true);
           setUrbanAnalysis(null);
-          const aiData = { zone: `Delhi Urban Zone (${y})`, people, loss, risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡" };
+          const aiData = {
+            zone: `Delhi Urban Zone (${y})`,
+            people,
+            loss,
+            risk: FloodRisk > 0.6 ? "Severe 🔴" : FloodRisk > 0.4 ? "Moderate 🟠" : "Low 🟡",
+            rainfall_mm: rainfall,
+            rain_probability: rainProbability,
+            floodRisk: FloodRisk
+          };
           const analysis = await getUrbanAnalysis(aiData, y);
           setUrbanAnalysis(analysis || "No analysis available.");
         } catch (err) {
@@ -676,6 +767,8 @@ export default function MapView() {
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="6" cy="6" r="5" stroke="currentColor" stroke-width="1" opacity="0.25"/><path d="M6 3v3l2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.8"/></svg>
               Updated ${realTimeAQI.timestamp}
             </div>
+
+            ${rainHtml}
           </div>
         `;
       } else if (nearestAQI) {
@@ -697,6 +790,8 @@ export default function MapView() {
                 <div style="width:20px;height:20px;border-radius:50%;background:${aqiColor};box-shadow:0 0 10px ${aqiColor}60;"></div>
               </div>
             </div>
+
+            ${rainHtml}
           </div>
         `;
       } else {
@@ -705,6 +800,8 @@ export default function MapView() {
             <div style="color: #94a3b8; font-size: 13px; line-height: 1.5;">
               ${OPENWEATHER_KEY ? 'AQI data not available for this location' : 'Set VITE_OPENWEATHER_API_KEY for real-time AQI'}
             </div>
+
+            ${rainHtml}
           </div>
         `;
       }
@@ -909,10 +1006,15 @@ export default function MapView() {
       return;
     }
 
-    // Calculate max depth based on year
+    // Calculate max depth based on year and rainfall
     const yearsElapsed = year - MIN_YEAR;
     const timeFactor = yearsElapsed / (MAX_YEAR - MIN_YEAR);
-    const maxDepth = 3 * (timeFactor + FLOOD_ANIMATION_CONFIG.baseDepthMultiplier);
+    const rainAmplifier = Math.min(rainfallRef.current / 15, 1); // mm-based
+    const maxDepth = 3 * (
+      timeFactor +
+      FLOOD_ANIMATION_CONFIG.baseDepthMultiplier +
+      rainAmplifier * 0.6
+    );
 
     // Reset depth when toggling on or year changes significantly
     if (floodDepthRef.current >= maxDepth) {
