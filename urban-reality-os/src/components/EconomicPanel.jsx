@@ -32,11 +32,20 @@ export default function EconomicPanel({ data, analysis, analysisLoading, demogra
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
         <div>
           <div style={{ fontSize: 11, textTransform: "uppercase", color: "#94a3b8", letterSpacing: "0.5px" }}>Econ Loss</div>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "#f87171" }}>₹{data.loss} Cr</div>
+          {(() => {
+            const lossVal = Number.isFinite(data?.loss)
+              ? data.loss
+              : (Number.isFinite(data?.economicLossCr) ? data.economicLossCr : null);
+            return (
+              <div style={{ fontSize: 18, fontWeight: 700, color: "#f87171" }}>
+                {lossVal !== null ? `₹${Number(lossVal).toLocaleString(undefined, { maximumFractionDigits: 2 })} Cr` : "—"}
+              </div>
+            );
+          })()}
         </div>
         <div>
           <div style={{ fontSize: 11, textTransform: "uppercase", color: "#94a3b8", letterSpacing: "0.5px" }}>Risk Level</div>
-          <div style={{ fontSize: 15, fontWeight: 600 }}>{data.risk}</div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>{data?.risk ?? "—"}</div>
         </div>
       </div>
 
@@ -50,16 +59,16 @@ export default function EconomicPanel({ data, analysis, analysisLoading, demogra
           
           <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
             <span style={{ fontSize: 24, fontWeight: 800, color: "#fff" }}>
-              {(demographics.totalPopulation / 1000000).toFixed(2)}M
+              {Number.isFinite(demographics?.totalPopulation) ? `${(demographics.totalPopulation / 1000000).toFixed(2)}M` : "—"}
             </span>
-            <span style={{ fontSize: 13, color: demographics.growthRate > 0 ? "#4ade80" : "#f87171", fontWeight: 500 }}>
-              {demographics.growthRate > 0 ? "↗" : "↘"} {demographics.growthRate}%
+            <span style={{ fontSize: 13, color: (demographics?.growthRate ?? 0) > 0 ? "#4ade80" : "#f87171", fontWeight: 500 }}>
+              {(demographics && Number.isFinite(demographics.growthRate)) ? (demographics.growthRate > 0 ? `↗ ${demographics.growthRate}%` : `↘ ${demographics.growthRate}%`) : "—"}
             </span>
           </div>
           
           <div style={{ fontSize: 11, color: "#94a3b8", display: "flex", justifyContent: "space-between" }}>
-             <span>Growth: +{(demographics.absoluteGrowth / 100000).toFixed(1)} Lakhs</span>
-             <span>Migrants: {demographics.migrationShare}%</span>
+             <span>Growth: +{Number.isFinite(demographics?.absoluteGrowth) ? `${(demographics.absoluteGrowth / 100000).toFixed(1)} Lakhs` : "—"}</span>
+             <span>Migrants: {Number.isFinite(demographics?.migrationShare) ? `${demographics.migrationShare}%` : "—"}</span>
           </div>
         </div>
       )}

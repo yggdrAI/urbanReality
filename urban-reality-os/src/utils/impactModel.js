@@ -1,3 +1,6 @@
+// ===============================
+// SIMPLE IMPACT (FAST MODEL)
+// ===============================
 export function calculateImpact({
     aqi,
     rainfall,
@@ -5,43 +8,119 @@ export function calculateImpact({
     traffic,
     year
 }) {
-    // Base simulation constants
     const BASE_YEAR = 2025;
     const MAX_YEAR = 2040;
 
-    const timeFactor = (year - BASE_YEAR) / (MAX_YEAR - BASE_YEAR);
+    const timeFactor = Math.max(
+        0,
+        Math.min(1, (year - BASE_YEAR) / (MAX_YEAR - BASE_YEAR))
+    );
 
-    // Flood Risk Model
-    // rainfall: mm, rainProb: %
-    const rainSevereFactor = Math.min(rainfall / 20, 1); // 20mm is severe
+    // ---- FLOOD RISK ----
+    const rainSevereFactor = Math.min(rainfall / 20, 1);
     const rainProbFactor = rainProb / 100;
 
     const floodRisk = Math.min(
         1,
-        0.25 + // Base risk
-        (0.4 * timeFactor) + // Climate change factor
-        (rainSevereFactor * 0.45) + // Real-time rain impact
-        (rainProbFactor * 0.15)    // Forecast impact
+        0.25 +
+        (0.4 * timeFactor) +
+        (rainSevereFactor * 0.45) +
+        (rainProbFactor * 0.15)
     );
 
-    // People Impact Model
-    const basePop = 28000;
+    // ---- PEOPLE AFFECTED ----
+    const basePop = 28_000;
     const growth = 6000 * timeFactor;
 
-    // Impact algorithm
     const peopleAffected = Math.round(
-        (800 + (110 * aqi)) * 0.4 + // AQI Health impact
-        (12000 * floodRisk) +       // Flood displacement
-        (9000 * traffic) +          // Commuter delays
-        (0.05 * (basePop + growth)) // Baseline affected population
+        (800 + 110 * (aqi || 0)) * 0.4 +
+        12000 * floodRisk +
+        9000 * (traffic || 0) +
+        0.05 * (basePop + growth)
     );
 
     return {
-        floodRisk: parseFloat(floodRisk.toFixed(2)),
+        floodRisk: Number(floodRisk.toFixed(2)),
         peopleAffected: Math.max(100, peopleAffected),
         riskLevel:
             floodRisk > 0.65 ? "Severe 🔴" :
-                floodRisk > 0.4 ? "Moderate 🟠" :
-                    "Low 🟡"
+            floodRisk > 0.4 ? "Moderate 🟠" :
+            "Low 🟡"
+    };
+}
+
+// ===============================
+// FULL IMPACT MODEL (ECON + POP)
+// ===============================
+export function calculateImpactModel({
+    year,
+    baseYear = 2025,
+    populationBase,
+    populationGrowthRate = 1.6,
+    aqi = 0,
+    rainfallMm = 0,
+    trafficCongestion = 0,
+    floodRisk = 0,
+    worldBank = {}
+}) {
+    // ---- SAFETY ----
+    const safePopulationBase =
+        Number.isFinite(populationBase) && populationBase > 0
+            ? populationBase
+            : 28_000_000; // Delhi fallback
+
+    const yearsElapsed = Math.max(0, year - baseYear);
+
+    // ---- POPULATION ----
+    const population =
+        safePopulationBase *
+        Math.pow(1 + populationGrowthRate / 100, yearsElapsed);
+
+    // ---- EXPOSURE ----
+    const aqiFactor = Math.min(aqi / 300, 1);
+    const rainFactor = Math.min(rainfallMm / 50, 1);
+    const trafficFactor = Math.min(trafficCongestion, 1);
+
+    const exposure =
+        0.45 * aqiFactor +
+        0.30 * rainFactor +
+        0.25 * trafficFactor;
+
+    const peopleAffected = Math.round(population * exposure * 0.25);
+
+    // ---- ECONOMIC LOSS ----
+    const gdpPerCapita =
+        Number(worldBank?.gdpPerCapita?.value) || 2500;
+
+    const productivityLossCr =
+        (peopleAffected * gdpPerCapita * 0.002) / 1e7;
+
+    const infrastructureLossCr =
+        floodRisk * 1200;
+
+    // ---- TIME MULTIPLIER ----
+    const timeMultiplier = 1 + yearsElapsed * 0.06;
+
+    const economicLossCr = Math.min(
+        2500,
+        Math.round(
+            (productivityLossCr + infrastructureLossCr) * timeMultiplier
+        )
+    );
+
+    // ---- RISK ----
+    let risk = "Low 🟡";
+    if (aqi >= 250 || economicLossCr > 1500 || exposure > 0.65) {
+        risk = "Severe 🔴";
+    } else if (aqi >= 150 || economicLossCr > 600 || exposure > 0.45) {
+        risk = "Moderate 🟠";
+    }
+
+    return {
+        population: Math.round(population),
+        peopleAffected,
+        economicLossCr,
+        exposure: Number(exposure.toFixed(2)),
+        risk
     };
 }
