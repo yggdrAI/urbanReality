@@ -15,6 +15,7 @@ import { fetchIndiaMacroData } from "../utils/worldBank";
 import { calculateImpactModel } from "../utils/impactModel";
 import { fetchRealtimeAQI } from "../utils/aqi";
 import LocationPopup from "./LocationPopup";
+import DebugPanel from "./DebugPanel";
 
 // Constants
 const BASE_YEAR = 2025;
@@ -137,6 +138,198 @@ function simulateFlood(map, center, rainfall) {
     return features;
 }
 
+// --- Elevation Cache ---
+const elevationCache = new Map();
+
+function getCachedElevation(map, lngLat) {
+    if (!map || !lngLat) return 0;
+    const key = `${lngLat.lng.toFixed(5)},${lngLat.lat.toFixed(5)}`;
+    if (!elevationCache.has(key)) {
+        elevationCache.set(key, getElevation(map, lngLat));
+    }
+    return elevationCache.get(key);
+}
+
+// --- Water Flow Direction ---
+function getFlowDirection(map, lngLat) {
+    if (!map || !lngLat) return { dx: 0, dy: 0 };
+    const d = 0.0006;
+    
+    try {
+        const eCenter = getCachedElevation(map, lngLat);
+        const eEast = getCachedElevation(map, { lng: lngLat.lng + d, lat: lngLat.lat });
+        const eNorth = getCachedElevation(map, { lng: lngLat.lng, lat: lngLat.lat + d });
+        
+        return {
+            dx: eCenter - eEast,
+            dy: eCenter - eNorth
+        };
+    } catch (e) {
+        return { dx: 0, dy: 0 };
+    }
+}
+
+// --- Risk Score Calculation ---
+function calculateRisk(map, lngLat, population = 1) {
+    if (!map || !lngLat) return 0;
+    try {
+        const flood = getDrainageScore(map, lngLat);
+        const heat = calculateHeatIndex(map, lngLat);
+        return (flood * 0.6 + heat * 0.4) * population;
+    } catch (e) {
+        return 0;
+    }
+}
+
+// --- Emergency Response Time ---
+function emergencyResponseTime(map, lngLat) {
+    if (!map || !lngLat) return 5;
+    try {
+        const slope = getSlope(map, lngLat);
+        const floodPenalty = getDrainageScore(map, lngLat);
+        return Math.round(5 + slope * 12 + floodPenalty * 8);
+    } catch (e) {
+        return 5;
+    }
+}
+
+// --- Update Functions for Terrain Features ---
+function updateWaterFlow(map) {
+    if (!map) return;
+    try {
+        const center = map.getCenter();
+        const features = [];
+        const arrowLength = 0.001; // Length of flow arrow
+
+        for (let i = -0.01; i <= 0.01; i += 0.004) {
+            for (let j = -0.01; j <= 0.01; j += 0.004) {
+                const lngLat = {
+                    lng: center.lng + i,
+                    lat: center.lat + j
+                };
+
+                const { dx, dy } = getFlowDirection(map, lngLat);
+                const magnitude = Math.sqrt(dx * dx + dy * dy);
+                
+                // Only show arrows where there's significant flow
+                if (magnitude > 0.1) {
+                    // Normalize direction
+                    const normDx = dx / magnitude;
+                    const normDy = dy / magnitude;
+                    
+                    // Create line from start to end point
+                    const startLng = lngLat.lng;
+                    const startLat = lngLat.lat;
+                    const endLng = startLng + normDx * arrowLength;
+                    const endLat = startLat + normDy * arrowLength;
+                    
+                    features.push({
+                        type: "Feature",
+                        properties: { magnitude },
+                        geometry: {
+                            type: "LineString",
+                            coordinates: [[startLng, startLat], [endLng, endLat]]
+                        }
+                    });
+                }
+            }
+        }
+
+        const source = map.getSource("water-flow");
+        if (source) {
+            source.setData({
+                type: "FeatureCollection",
+                features
+            });
+        }
+    } catch (e) {
+        console.warn("Water flow update failed:", e);
+    }
+}
+
+function updateRiskHeatmap(map) {
+    if (!map) return;
+    try {
+        const center = map.getCenter();
+        const features = [];
+
+        for (let x = -0.015; x <= 0.015; x += 0.004) {
+            for (let y = -0.015; y <= 0.015; y += 0.004) {
+                const lngLat = { lng: center.lng + x, lat: center.lat + y };
+                const risk = calculateRisk(map, lngLat);
+
+                if (risk > 0) {
+                    features.push({
+                        type: "Feature",
+                        properties: { risk },
+                        geometry: {
+                            type: "Point",
+                            coordinates: [lngLat.lng, lngLat.lat]
+                        }
+                    });
+                }
+            }
+        }
+
+        const source = map.getSource("risk-heat");
+        if (source) {
+            source.setData({
+                type: "FeatureCollection",
+                features
+            });
+        }
+    } catch (e) {
+        console.warn("Risk heatmap update failed:", e);
+    }
+}
+
+function updateEmergencyZones(map) {
+    if (!map) return;
+    try {
+        const center = map.getCenter();
+        const features = [];
+
+        for (let i = -0.01; i <= 0.01; i += 0.005) {
+            for (let j = -0.01; j <= 0.01; j += 0.005) {
+                const lngLat = { lng: center.lng + i, lat: center.lat + j };
+
+                features.push({
+                    type: "Feature",
+                    properties: {
+                        time: emergencyResponseTime(map, lngLat)
+                    },
+                    geometry: {
+                        type: "Point",
+                        coordinates: [lngLat.lng, lngLat.lat]
+                    }
+                });
+            }
+        }
+
+        const source = map.getSource("emergency-zones");
+        if (source) {
+            source.setData({
+                type: "FeatureCollection",
+                features
+            });
+        }
+    } catch (e) {
+        console.warn("Emergency zones update failed:", e);
+    }
+}
+
+// --- Throttling Utility ---
+function createThrottledUpdate(delay = 300) {
+    let lastUpdate = 0;
+    return (fn) => {
+        const now = Date.now();
+        if (now - lastUpdate > delay) {
+            lastUpdate = now;
+            fn();
+        }
+    };
+}
+
 // Major Indian cities with coordinates
 const MAJOR_INDIAN_CITIES = [
     { name: "Delhi", lat: 28.6139, lng: 77.2090 },
@@ -180,8 +373,11 @@ export default function MapView() {
     const rainfallRef = useRef(0); // Store current rainfall for flood animation
     const macroDataRef = useRef(null);
     const lastAQIRef = useRef(null); // Persist AQI across renders
+    const lastUpdateRef = useRef(0); // For throttling terrain updates
+    const throttledUpdateRef = useRef(null); // Throttled update function
 
     const [year, setYear] = useState(INITIAL_YEAR);
+    const [debugData, setDebugData] = useState(null);
     const [impactData, setImpactData] = useState(null);
     const [urbanAnalysis, setUrbanAnalysis] = useState(null);
     const [analysisLoading, setAnalysisLoading] = useState(false);
@@ -440,6 +636,101 @@ export default function MapView() {
                     });
                 } catch (e) {
                     console.warn("Terrain flood layer setup failed:", e);
+                }
+
+                /* ===== WATER FLOW ARROWS ===== */
+                try {
+                    map.addSource("water-flow", {
+                        type: "geojson",
+                        data: { type: "FeatureCollection", features: [] }
+                    });
+
+                    // Use line layer to show flow direction
+                    map.addLayer({
+                        id: "water-flow-arrows",
+                        type: "line",
+                        source: "water-flow",
+                        layout: {
+                            "line-cap": "round",
+                            "line-join": "round",
+                            visibility: "none" // Hidden by default, toggle via layer controls
+                        },
+                        paint: {
+                            "line-color": "rgba(59, 130, 246, 0.7)",
+                            "line-width": 2,
+                            "line-opacity": 0.6
+                        }
+                    });
+                } catch (e) {
+                    console.warn("Water flow arrows setup failed:", e);
+                }
+
+                /* ===== RISK HEATMAP ===== */
+                try {
+                    map.addSource("risk-heat", {
+                        type: "geojson",
+                        data: { type: "FeatureCollection", features: [] }
+                    });
+
+                    map.addLayer({
+                        id: "risk-heatmap",
+                        type: "heatmap",
+                        source: "risk-heat",
+                        paint: {
+                            "heatmap-weight": ["get", "risk"],
+                            "heatmap-intensity": 1.2,
+                            "heatmap-radius": 25,
+                            "heatmap-color": [
+                                "interpolate",
+                                ["linear"],
+                                ["heatmap-density"],
+                                0, "rgba(0,0,0,0)",
+                                0.3, "rgba(255,255,0,0.6)",
+                                0.6, "rgba(255,165,0,0.8)",
+                                1, "rgba(255,0,0,1)"
+                            ],
+                            "heatmap-opacity": 0.6
+                        },
+                        layout: {
+                            visibility: "none" // Hidden by default
+                        }
+                    });
+                } catch (e) {
+                    console.warn("Risk heatmap setup failed:", e);
+                }
+
+                /* ===== EMERGENCY RESPONSE ZONES ===== */
+                try {
+                    map.addSource("emergency-zones", {
+                        type: "geojson",
+                        data: { type: "FeatureCollection", features: [] }
+                    });
+
+                    map.addLayer({
+                        id: "emergency-response",
+                        type: "circle",
+                        source: "emergency-zones",
+                        paint: {
+                            "circle-radius": 10,
+                            "circle-color": [
+                                "interpolate",
+                                ["linear"],
+                                ["get", "time"],
+                                5, "rgba(34,197,94,0.8)",
+                                10, "rgba(234,179,8,0.8)",
+                                20, "rgba(239,68,68,0.8)"
+                            ],
+                            "circle-opacity": 0.6,
+                            "circle-stroke-width": 1,
+                            "circle-stroke-color": "#ffffff",
+                            "circle-stroke-opacity": 0.5
+                        },
+                        layout: {
+                            visibility: "none" // Hidden by default
+                        }
+                    });
+                } catch (e) {
+                    console.warn("Emergency response zones setup failed:", e);
                 }
 
                 /* ===== AQI (REAL-TIME FROM OPENWEATHER API) ===== */
@@ -1343,17 +1634,25 @@ export default function MapView() {
                     const elevation = getElevation(map, e.lngLat);
                     const slope = getSlope(map, e.lngLat);
                     const heat = calculateHeatIndex(map, e.lngLat);
+                    const drainage = getDrainageScore(map, e.lngLat);
+                    const response = emergencyResponseTime(map, e.lngLat);
 
                     if (elevation !== null) {
                         map.getCanvas().style.cursor = "crosshair";
                         
+                        const debugInfo = {
+                            elevation: Math.round(elevation),
+                            slope: parseFloat(slope.toFixed(2)),
+                            heat: parseFloat(heat.toFixed(2)),
+                            drainage: parseFloat(drainage.toFixed(2)),
+                            response: response
+                        };
+
+                        setDebugData(debugInfo);
+                        
                         // Dispatch custom event for HUD/popup integration
                         window.dispatchEvent(new CustomEvent("terrain-hover", {
-                            detail: {
-                                elevation: Math.round(elevation),
-                                slope: parseFloat(slope.toFixed(2)),
-                                heat: parseFloat(heat.toFixed(2))
-                            }
+                            detail: debugInfo
                         }));
                     }
                 } catch (err) {
@@ -1365,6 +1664,7 @@ export default function MapView() {
         const handleTerrainLeave = () => {
             clearTimeout(hoverTimeout);
             map.getCanvas().style.cursor = "";
+            setDebugData(null);
         };
 
         map.on("mousemove", handleTerrainHover);
@@ -1374,6 +1674,56 @@ export default function MapView() {
             clearTimeout(hoverTimeout);
             map.off("mousemove", handleTerrainHover);
             map.off("mouseleave", handleTerrainLeave);
+        };
+    }, [loading]);
+
+    /* ================= TERRAIN FEATURES UPDATE (WATER FLOW, RISK, EMERGENCY) ================= */
+    useEffect(() => {
+        if (!mapRef.current || loading) return;
+
+        const map = mapRef.current;
+        
+        // Initialize throttled update function
+        if (!throttledUpdateRef.current) {
+            throttledUpdateRef.current = createThrottledUpdate(400);
+        }
+
+        const updateTerrainFeatures = () => {
+            throttledUpdateRef.current(() => {
+                try {
+                    // Update water flow arrows if layer is visible
+                    if (map.getLayer("water-flow-arrows") && 
+                        map.getLayoutProperty("water-flow-arrows", "visibility") === "visible") {
+                        updateWaterFlow(map);
+                    }
+                    
+                    // Update risk heatmap if layer is visible
+                    if (map.getLayer("risk-heatmap") && 
+                        map.getLayoutProperty("risk-heatmap", "visibility") === "visible") {
+                        updateRiskHeatmap(map);
+                    }
+                    
+                    // Update emergency zones if layer is visible
+                    if (map.getLayer("emergency-response") && 
+                        map.getLayoutProperty("emergency-response", "visibility") === "visible") {
+                        updateEmergencyZones(map);
+                    }
+                } catch (e) {
+                    console.warn("Terrain features update failed:", e);
+                }
+            });
+        };
+
+        // Update on map move/zoom
+        map.on("moveend", updateTerrainFeatures);
+        map.on("zoomend", updateTerrainFeatures);
+
+        // Initial update
+        setTimeout(updateTerrainFeatures, 500);
+
+        return () => {
+            map.off("moveend", updateTerrainFeatures);
+            map.off("zoomend", updateTerrainFeatures);
         };
     }, [loading]);
 
@@ -1437,6 +1787,12 @@ export default function MapView() {
                     type: "FeatureCollection",
                     features: floodFeatures
                 });
+
+                // Update water flow arrows after flood update
+                if (map.getLayer("water-flow-arrows") && 
+                    map.getLayoutProperty("water-flow-arrows", "visibility") === "visible") {
+                    updateWaterFlow(map);
+                }
             }
 
             // Keep original flood-depth source for backward compatibility
@@ -2357,6 +2713,7 @@ export default function MapView() {
 
             <EconomicPanel data={impactData} demographics={demographics} analysis={urbanAnalysis} analysisLoading={analysisLoading} />
             <CitySuggestions map={mapRef.current} visible={showSuggestions} />
+            <DebugPanel data={debugData} />
 
             <div
                 ref={mapContainer}
