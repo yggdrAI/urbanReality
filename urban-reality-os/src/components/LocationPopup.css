@@ -23,6 +23,10 @@
   color: #f8fafc;
 }
 
+.location-popup-header {
+  margin-bottom: 12px;
+}
+
 .location-popup-coords {
   color: #94a3b8;
   font-size: 12px;
@@ -41,7 +45,9 @@
 
 .location-popup-card:hover {
   background: rgba(255, 255, 255, 0.06);
+  transform: translateY(-1px);
 }
+
 
 .location-popup-card-header {
   display: flex;
@@ -76,6 +82,7 @@
 
 .section-content {
   animation: fadeIn 0.2s ease;
+  transition: max-height 0.25s ease, opacity 0.2s ease;
 }
 
 @keyframes fadeIn {
@@ -108,10 +115,6 @@
 
 .location-popup-metric.big strong {
   font-size: 20px;
-}
-
-.location-popup-metric.muted {
-  color: #64748b;
 }
 
 .location-popup-metric.muted span,
@@ -212,9 +215,9 @@
 }
 
 @keyframes pulseGlow {
-  0% { box-shadow: 0 0 0 rgba(239, 68, 68, 0.0); }
-  50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.5); }
-  100% { box-shadow: 0 0 0 rgba(239, 68, 68, 0.0); }
+  0% { opacity: 0.85; }
+  50% { opacity: 1; }
+  100% { opacity: 0.85; }
 }
 
 .aqi-bar-label {

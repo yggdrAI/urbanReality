@@ -3,9 +3,9 @@ import "./LocationPopup.css";
 
 // AQI Bar Component (Memoized)
 const AQIBar = memo(function AQIBar({ value }) {
-    if (!value || value === "N/A") return null;
+    if (value === null || value === undefined || value === "N/A") return null;
     
-    const numValue = typeof value === "number" ? value : parseInt(value);
+    const numValue = Number(value);
     if (isNaN(numValue)) return null;
     
     const percent = Math.min((numValue / 500) * 100, 100);
@@ -74,44 +74,44 @@ function LocationPopup({
     placeName,
     lat,
     lng,
-    year,
-    baseYear,
-
+    // Data props
     realTimeAQI,
     finalAQI,
-
     rainfall,
     rainProbability,
-
     macroData,
     impact,
     demographics,
-
+    // AI props
     analysis,
     analysisLoading,
-
     onSave
 }) {
     const [saving, setSaving] = useState(false);
     const [saveSuccess, setSaveSuccess] = useState(false);
     /* ================= DATA PROCESSING ================= */
 
-    const population =
-        demographics?.population ??
-        impact?.population ??
-        macroData?.population?.value ??
+    // Priority: Demographics (Simulated) > MacroData (WorldBank) > Impact (Fallback)
+    const population = 
+        demographics?.totalPopulation ?? 
+        macroData?.population?.value ?? 
+        impact?.population ?? 
         null;
 
     const growthRate = demographics?.growthRate ?? null;
-    const migrants = demographics?.migrantsPct ?? null;
+    const migrants = demographics?.migrationShare ?? null;
 
-    // Fix: Use direct pm25/pm10 from realTimeAQI (not components)
-    const pm25 = realTimeAQI?.pm25 ?? realTimeAQI?.components?.pm25;
+    // Fix: Handle 0 properly using checks against null/undefined
+    const pm25 = realTimeAQI?.pm25 ?? realTimeAQI?.components?.pm2_5;
     const pm10 = realTimeAQI?.pm10 ?? realTimeAQI?.components?.pm10;
-    const aqiValue = finalAQI ?? realTimeAQI?.aqi ?? "N/A";
+    
+    // Use finalAQI if available, otherwise realTime, default to N/A
+    const aqiValue = (finalAQI !== undefined && finalAQI !== null) 
+        ? finalAQI 
+        : (realTimeAQI?.aqi ?? "N/A");
 
     const getAQIClass = (aqi) => {
-        if (!aqi || aqi === "N/A") return "";
+        if (aqi === null || aqi === undefined || aqi === "N/A") return "";
         const val = typeof aqi === "number" ? aqi : parseInt(aqi);
         if (isNaN(val)) return "";
         if (val <= 50) return "aqi-good";
@@ -121,7 +121,7 @@ function LocationPopup({
     };
 
     const getAQILabel = (aqi) => {
-        if (!aqi || aqi === "N/A") return "N/A";
+        if (aqi === null || aqi === undefined || aqi === "N/A") return "N/A";
         const val = typeof aqi === "number" ? aqi : parseInt(aqi);
         if (isNaN(val)) return "N/A";
         if (val >= 300) return "Severe";
@@ -131,7 +131,7 @@ function LocationPopup({
     };
 
     const getAQILabelColor = (aqi) => {
-        if (!aqi || aqi === "N/A") return "#94a3b8";
+        if (aqi === null || aqi === undefined || aqi === "N/A") return "#94a3b8";
         const val = typeof aqi === "number" ? aqi : parseInt(aqi);
         if (isNaN(val)) return "#94a3b8";
         if (val >= 300) return "#ef4444";
@@ -147,8 +147,8 @@ function LocationPopup({
         return num.toLocaleString();
     };
 
-    const isRealTimeAQI = !!realTimeAQI?.aqi;
-    const hasWorldBankData = !!macroData;
+    const isRealTime = !!realTimeAQI?.aqi;
+    const hasWorldBank = !!macroData?.population;
 
     /* ================= UI ================= */
 
@@ -164,7 +164,7 @@ function LocationPopup({
             {/* AIR QUALITY CARD */}
             <Section 
                 title="Air Quality" 
-                badge={isRealTimeAQI ? { live: true } : null}
+                badge={isRealTime ? { live: true } : null}
             >
                 <div className={`location-popup-metric ${getAQIClass(aqiValue)}`} id="aqi-value-container">
                     <span>AQI</span>
@@ -180,20 +180,20 @@ function LocationPopup({
                         {getAQILabel(aqiValue)}
                     </span>
                 </div>
-                {(pm25 || pm10) && (
+                {((pm25 !== null && pm25 !== undefined) || (pm10 !== null && pm10 !== undefined)) && (
                     <div className="metric-tiles">
                         <div className="metric-tile">
                             <span>PM2.5</span>
                             <div>
-                                <strong id="pm25-value">{pm25 ? pm25.toFixed(1) : "—"}</strong>
-                                {pm25 && <span className="unit">µg/m³</span>}
+                                <strong id="pm25-value">{(pm25 !== null && pm25 !== undefined) ? pm25.toFixed(1) : "—"}</strong>
+                                {(pm25 !== null && pm25 !== undefined) && <span className="unit">µg/m³</span>}
                             </div>
                         </div>
                         <div className="metric-tile">
                             <span>PM10</span>
                             <div>
-                                <strong id="pm10-value">{pm10 ? pm10.toFixed(1) : "—"}</strong>
-                                {pm10 && <span className="unit">µg/m³</span>}
+                                <strong id="pm10-value">{(pm10 !== null && pm10 !== undefined) ? pm10.toFixed(1) : "—"}</strong>
+                                {(pm10 !== null && pm10 !== undefined) && <span className="unit">µg/m³</span>}
                             </div>
                         </div>
                     </div>
@@ -207,18 +207,18 @@ function LocationPopup({
             >
                 <div className="location-popup-metric weather-metric">
                     <span>🌧 Rainfall</span>
-                    <strong id="rainfall-value">{rainfall !== null ? `${rainfall} mm` : "0 mm"}</strong>
+                    <strong id="rainfall-value">{Number.isFinite(rainfall) ? `${rainfall} mm` : "0 mm"}</strong>
                 </div>
                 <div className="location-popup-metric weather-metric">
                     <span>☁ Rain Prob.</span>
-                    <strong id="rain-probability-value">{rainProbability !== null ? `${rainProbability}%` : "0%"}</strong>
+                    <strong id="rain-probability-value">{Number.isFinite(rainProbability) ? `${rainProbability}%` : "0%"}</strong>
                 </div>
             </Section>
 
             {/* POPULATION CARD */}
             <Section 
                 title="Population"
-                badge={hasWorldBankData ? { label: "World Bank" } : null}
+                badge={hasWorldBank ? { label: "World Bank" } : null}
             >
                 <div className="location-popup-metric big">
                     <span id="population-value">👥 {formatPopulation(population)}</span>

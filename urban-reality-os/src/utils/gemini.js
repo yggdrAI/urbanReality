@@ -4,73 +4,92 @@
 // ===================================================
 
 const API_BASE =
-  import.meta.env.VITE_GEMINI_BACKEND_URL || "http://localhost:3001";
+  (import.meta.env.VITE_GEMINI_BACKEND_URL || "http://localhost:3001")
+    .replace(/\/$/, "");
 
-/**
- * Urban Analysis with:
- * 1) Year-to-year comparison
- * 2) Sector-wise loss explanation
- */
+// ---------- HELPERS ----------
+function clamp(val, min, max) {
+  return Math.min(Math.max(Number(val) || 0, min), max);
+}
+
+// ===================================================
+// Urban Analysis (Gemini explain-only)
+// ===================================================
 export async function getUrbanAnalysis(raw) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
+
   try {
-    // ---------- NORMALIZE INPUT ----------
+    // ---------- NORMALIZE ----------
     const data = {
       zone: raw?.zone || "Urban Area",
-      year: raw?.year || new Date().getFullYear(),
-      baseYear: raw?.baseYear || 2025,
+      year: Number(raw?.year) || new Date().getFullYear(),
+      baseYear: Number(raw?.baseYear) || 2024,
 
       aqi: Number(raw?.aqi ?? raw?.aqi_realtime ?? 0),
       rainfallMm: Number(raw?.rainfallMm ?? raw?.rainfall ?? 0),
       traffic: Number(raw?.traffic ?? raw?.trafficCongestion ?? 0),
       floodRisk: Number(raw?.floodRisk ?? 0),
 
-      // FIX: Default to 0 instead of failing on missing data
       peopleAffected: Number(raw?.peopleAffected) || 0,
       economicLossCr: Number(raw?.economicLossCr) || 0,
 
-      // Optional baseline (for comparison)
-      baseYearLossCr: Number(raw?.baseYearLossCr) || null,
-      baseYearAQI: Number(raw?.baseYearAQI) || null
+      baseYearLossCr:
+        raw?.baseYearLossCr !== undefined ? Number(raw.baseYearLossCr) : null,
+      baseYearAQI:
+        raw?.baseYearAQI !== undefined ? Number(raw.baseYearAQI) : null
     };
 
     // ---------- SANITIZE ----------
     data.aqi = clamp(data.aqi, 0, 999);
     data.traffic = clamp(data.traffic, 0, 1);
     data.floodRisk = clamp(data.floodRisk, 0, 1);
-    data.rainfallMm = clamp(data.rainfallMm, 0, 2000);
+    data.rainfallMm = clamp(data.rainfallMm, 0, 5000);
     data.peopleAffected = Math.round(data.peopleAffected);
-    data.economicLossCr = parseFloat(data.economicLossCr.toFixed(2));
+    data.economicLossCr = Number(data.economicLossCr.toFixed(2));
 
-    // ---------- CONTEXT CHECK ----------
-    // If loss is 0, we might be in a "safe" scenario or initial load
-    if (data.economicLossCr === 0 && data.aqi < 50) {
-      return `Conditions in ${data.zone} appear stable. Current metrics indicate minimal risk, with air quality and infrastructure operating within safe limits. Continued monitoring is recommended.`;
-    }
-
-    // ---------- DERIVED COMPARISON ----------
-    const hasComparison =
-      data.baseYearLossCr !== null &&
-      data.year !== data.baseYear;
-
+    // ---------- COMPARISON ----------
     let comparisonText = "No historical baseline available.";
-    if (hasComparison) {
+    if (
+      data.baseYearLossCr !== null &&
+      data.year !== data.baseYear
+    ) {
       const lossDiff = data.economicLossCr - data.baseYearLossCr;
-      const aqiDiff = data.aqi - data.baseYearAQI;
-      comparisonText = `Compared to ${data.baseYear}: Economic loss is ${lossDiff > 0 ? 'HIGHER' : 'LOWER'} by ₹${Math.abs(lossDiff).toFixed(1)} Cr, and AQI is ${aqiDiff > 0 ? 'worse' : 'better'} by ${Math.abs(aqiDiff)} points.`;
+      const aqiDiff =
+        typeof data.baseYearAQI === "number"
+          ? data.aqi - data.baseYearAQI
+          : null;
+
+      const lossText =
+        Math.abs(lossDiff) < 0.1
+          ? "stable"
+          : `${lossDiff > 0 ? "INCREASED" : "DECREASED"} by ₹${Math.abs(lossDiff).toFixed(1)} Cr`;
+
+      const aqiText =
+        aqiDiff === null
+          ? "unchanged"
+          : Math.abs(aqiDiff) < 1
+          ? "stable"
+          : `${aqiDiff > 0 ? "worse" : "better"} by ${Math.abs(aqiDiff)} points`;
+
+      comparisonText = `Compared to ${data.baseYear}: Economic loss has ${lossText}, and AQI is ${aqiText}.`;
     }
 
     // ---------- PROMPT ----------
     const prompt = `
 Role: Urban Risk & Economics Analyst.
-Context: Analyzing impact data for ${data.zone} in the year ${data.year}.
+
+Context:
+Location: ${data.zone}
+Year: ${data.year}
 
 METRICS:
 - AQI: ${data.aqi}
 - Rainfall: ${data.rainfallMm} mm
-- Flood Risk Index: ${data.floodRisk.toFixed(2)} (0-1 scale)
-- Traffic Index: ${data.traffic.toFixed(2)} (0-1 scale)
-- Total Economic Loss: ₹${data.economicLossCr} Crores
-- Pop. Affected: ${data.peopleAffected.toLocaleString()}
+- Flood Risk Index: ${data.floodRisk.toFixed(2)} (0–1)
+- Traffic Index: ${data.traffic.toFixed(2)} (0–1)
+- Estimated Economic Loss: ₹${data.economicLossCr} Crores
+- Population Affected: ${data.peopleAffected.toLocaleString()}
 
 COMPARISON:
 ${comparisonText}
@@ -78,53 +97,53 @@ ${comparisonText}
 TASK:
 Provide a concise 5-point strategic summary (max 160 words):
 
-1. **Root Cause**: Briefly explain specific factors (Rain/AQI/Traffic) driving the ₹${data.economicLossCr} Cr loss.
-2. **Sector Impact**: Which sector is hit hardest? (Public Health, Transport, or Infrastructure).
-3. **Trend Analysis**: Why is the situation better/worse than the baseline?
-4. **Social Implication**: One sentence on the impact on daily life for the ${data.peopleAffected.toLocaleString()} affected people.
-5. **Mitigation**: Propose ONE high-impact, realistic solution suitable for Indian infrastructure.
+1. Root Cause of economic loss.
+2. Most impacted sector.
+3. Trend compared to baseline.
+4. Social implication for residents.
+5. One realistic mitigation strategy for Indian cities.
 
-Tone: Professional, urgent, data-backed. No filler words.
+Tone: Professional, data-backed, no filler.
 `;
 
     // ---------- API CALL ----------
     const resp = await fetch(`${API_BASE}/api/urban-analysis`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt }),
+      signal: controller.signal
     });
 
     if (!resp.ok) {
-      const text = await resp.text().catch(() => "");
-      throw new Error(`AI backend error ${resp.status}: ${text}`);
+      const text = await resp.text().catch(() => "Unknown error");
+      throw new Error(`Backend ${resp.status}: ${text}`);
     }
 
     const json = await resp.json();
-
-    // ---------- ROBUST RESPONSE EXTRACTION ----------
     return (
       json.analysis ||
       json.text ||
       json.output ||
       json.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "Analysis unavailable due to network or provider limits."
+      "Analysis unavailable."
     );
   } catch (err) {
-    console.error("getUrbanAnalysis failed:", err);
-    return "Analysis unavailable. Please check your connection.";
+    if (err.name === "AbortError")
+      return "Analysis timed out. Server may be sleeping.";
+    console.warn("getUrbanAnalysis failed:", err.message);
+    return "Analysis unavailable. Ensure backend is running.";
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
-// Helper
-function clamp(val, min, max) {
-  return Math.min(Math.max(Number(val) || 0, min), max);
-}
-
-/**
- * Terrain-aware urban insight analysis
- * Called on map click to explain why an area is at risk
- */
+// ===================================================
+// Terrain Insight (short explanation)
+// ===================================================
 export async function getTerrainInsight(context) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
   try {
     const {
       elevation = 0,
@@ -136,36 +155,29 @@ export async function getTerrainInsight(context) {
     } = context;
 
     const prompt = `
-You are an urban planning expert.
+Explain terrain-based urban risk in simple terms.
 
-Context:
-- Elevation: ${elevation} meters
+Metrics:
+- Elevation: ${elevation} m
 - Slope: ${slope.toFixed(2)}
-- Flood risk score: ${floodRisk.toFixed(2)} (0-1 scale, higher = more risk)
-- Heat index: ${heat.toFixed(2)}
-- Population density: ${population > 0 ? population.toLocaleString() : 'Unknown'}
-- Air Quality Index: ${aqi}
+- Flood Risk: ${floodRisk.toFixed(2)}
+- Heat Index: ${heat.toFixed(2)}
+- AQI: ${aqi}
+- Population: ${population ? population.toLocaleString() : "Unknown"}
 
-Explain in simple terms (4-5 sentences):
-1. Why this area is at risk (based on terrain and metrics)
-2. What terrain or infrastructure causes it
-3. One realistic mitigation strategy
-
-Avoid technical jargon. Write like you're explaining to a city planner or community leader.
-Tone: Professional, clear, actionable.
+Explain:
+1. Why this area is vulnerable.
+2. One infrastructure improvement recommendation.
 `;
 
-    const API_BASE = import.meta.env.VITE_GEMINI_BACKEND_URL || "http://localhost:3001";
-    
     const resp = await fetch(`${API_BASE}/api/urban-analysis`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt })
+      body: JSON.stringify({ prompt }),
+      signal: controller.signal
     });
 
-    if (!resp.ok) {
-      throw new Error(`AI backend error ${resp.status}`);
-    }
+    if (!resp.ok) throw new Error("Backend error");
 
     const json = await resp.json();
     return (
@@ -173,15 +185,19 @@ Tone: Professional, clear, actionable.
       json.text ||
       json.output ||
       json.candidates?.[0]?.content?.parts?.[0]?.text ||
-      "Terrain analysis unavailable. Please check your connection."
+      "Terrain insight unavailable."
     );
   } catch (err) {
-    console.error("getTerrainInsight failed:", err);
-    return "Terrain analysis temporarily unavailable. Please try again.";
+    console.warn("getTerrainInsight failed:", err.message);
+    return "Insight temporarily unavailable.";
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
+// ===================================================
 // Future expansion stubs
+// ===================================================
 export const getPredictiveRiskAnalysis = async () => null;
 export const getRealtimeDecisionSupport = async () => null;
 export const getComparativeAnalysis = async () => null;

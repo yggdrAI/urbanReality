@@ -4,10 +4,13 @@
 // ============================================
 
 export async function fetchRealtimeAQI(lat, lng, API_KEY) {
-  if (!API_KEY || !Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (!API_KEY || typeof lat !== 'number' || typeof lng !== 'number') {
+    console.warn("AQI Fetch skipped: Missing API Key or invalid coords");
+    return null;
+  }
 
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5000);
+  const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
 
   try {
     const res = await fetch(
@@ -15,10 +18,10 @@ export async function fetchRealtimeAQI(lat, lng, API_KEY) {
       { signal: controller.signal }
     );
 
-    if (!res.ok) throw new Error("AQI API failed");
+    if (!res.ok) throw new Error(`AQI API failed: ${res.status}`);
 
     const data = await res.json();
-    if (!data?.list?.length) throw new Error("No AQI data");
+    if (!data?.list?.length) return null;
 
     const d = data.list[0];
     const pm25 = Number(d.components?.pm2_5 ?? 0);
@@ -57,7 +60,10 @@ export async function fetchRealtimeAQI(lat, lng, API_KEY) {
       })
     };
   } catch (err) {
-    console.warn("AQI Fetch Error:", err.message || err);
+    // Only warn if it's not an abort (user cancellation)
+    if (err.name !== 'AbortError') {
+       console.warn("AQI Fetch Error:", err.message);
+    }
     return null;
   } finally {
     clearTimeout(timeout);
