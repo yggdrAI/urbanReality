@@ -61,6 +61,8 @@ const TERRAIN_SAMPLE_DELTA = 0.0005;
 function getElevation(map, lngLat) {
     if (!map || !lngLat) return 0;
     try {
+        // Guard: if terrain isn't ready yet, avoid calling queryTerrainElevation
+        if (!map.getTerrain || !map.getTerrain()) return 0;
         return map.queryTerrainElevation(lngLat, { exaggerated: false }) ?? 0;
     } catch (e) {
         return 0;
@@ -365,6 +367,140 @@ const MAJOR_INDIAN_CITIES = [
     { name: "Meerut", lat: 28.9845, lng: 77.7064 }
 ];
 
+/* ====== Map Helpers: centralized rendering & lighting helpers ====== */
+function ensureHillshade(map) {
+    if (!map) return;
+    try {
+        const style = map.getStyle && map.getStyle();
+        if (!style || !style.sources || !style.sources.terrain) return;
+        if (map.getLayer && map.getLayer("terrain-hillshade")) return;
+
+        map.addLayer({
+            id: "terrain-hillshade",
+            type: "hillshade",
+            source: "terrain",
+            paint: {
+                "hillshade-exaggeration": 0.6,
+                "hillshade-shadow-color": "#3d3d3d",
+                "hillshade-highlight-color": "#ffffff",
+                "hillshade-accent-color": "#9c8468"
+            }
+        });
+    } catch (e) {
+        console.warn("ensureHillshade failed:", e);
+    }
+}
+
+function add3DBuildings(map) {
+    if (!map) return;
+    try {
+        if (map.getLayer && map.getLayer("3d-buildings")) return;
+
+        const style = map.getStyle && map.getStyle();
+        if (!style || !style.sources || !style.sources.openmaptiles) return;
+
+        map.addLayer({
+            id: "3d-buildings",
+            source: "openmaptiles",
+            "source-layer": "building",
+            type: "fill-extrusion",
+            minzoom: 14,
+            paint: {
+                "fill-extrusion-color": "#d1d1d1",
+                "fill-extrusion-height": ["get", "render_height"],
+                "fill-extrusion-base": ["get", "render_min_height"],
+                "fill-extrusion-opacity": 0.85
+            }
+        });
+    } catch (e) {
+        console.warn("add3DBuildings failed:", e);
+    }
+}
+
+function updateSunLighting(map, hour = 14) {
+    if (!map) return;
+    try {
+        const azimuth = (hour / 24) * 360;
+        const altitude = Math.max(15, 80 - Math.abs(12 - hour) * 5);
+        map.setLight({
+            anchor: "map",
+            position: [azimuth, altitude, 80],
+            intensity: 0.8,
+            color: "#ffffff"
+        });
+    } catch (e) {
+        console.warn("updateSunLighting failed:", e);
+    }
+}
+
+function enableGlobalLighting(map) {
+    if (!map) return;
+    try {
+        map.setLight({
+            anchor: "map",
+            position: [1.5, 90, 80],
+            intensity: 0.7,
+            color: "#ffffff"
+        });
+    } catch (e) { /* ignore */ }
+}
+
+function enableFog(map) {
+    if (!map) return;
+    try {
+        map.setFog({
+            range: [0.6, 10],
+            color: "#dbe7f3",
+            "horizon-blend": 0.2,
+            "star-intensity": 0
+        });
+    } catch (e) { /* ignore */ }
+}
+
+function rehydrateCustomLayers(map) {
+    if (!map) return;
+    try {
+        // Terrain + hillshade + buildings + lighting should be reapplied after style/load
+        if (map.getSource && map.getSource("terrain")) map.setTerrain && map.setTerrain({ source: "terrain", exaggeration: 1.4 });
+        ensureHillshade(map);
+        add3DBuildings(map);
+        // Apply lighting after the style/terrain becomes idle
+        map.once("idle", () => {
+            enableGlobalLighting(map);
+            enableFog(map);
+            updateSunLighting(map, 16);
+        });
+    } catch (e) {
+        console.warn("rehydrateCustomLayers failed:", e);
+    }
+}
+
+function startFlyThrough(map, flyPath = defaultFlyPath) {
+    if (!map) return;
+    try {
+        setCinematicMode(true);
+        flyPath.forEach((step, i) => {
+            setTimeout(() => {
+                map.easeTo({ ...step, duration: 2500, easing: (t) => t * (2 - t) });
+                if (i === flyPath.length - 1) setTimeout(() => setCinematicMode(false), 2600);
+            }, i * 2600);
+        });
+    } catch (e) { console.warn('startFlyThrough failed:', e); }
+}
+
+function streetLevelView(map, lngLat) {
+    if (!map || !lngLat) return;
+    try {
+        setCinematicMode(true);
+        map.easeTo({ center: [lngLat.lng, lngLat.lat], zoom: 17, pitch: 80, bearing: Math.random() * 360, duration: 1800 });
+        setTimeout(() => setCinematicMode(false), 2000);
+    } catch (e) { console.warn('streetLevelView failed:', e); }
+}
+
+function setCinematicMode(active) {
+    try { document.body.classList.toggle('cinematic', !!active); } catch (e) {}
+}
+
 export default function MapView() {
     const mapContainer = useRef(null);
     const mapRef = useRef(null);
@@ -567,6 +703,9 @@ export default function MapView() {
 
         map.addControl(new maplibregl.NavigationControl(), "top-right");
 
+        // Keep elevation cache bounded: clear on camera moves
+        try { map.on && map.on("movestart", () => elevationCache.clear()); } catch (e) {}
+
         // Expose debug helpers to window for quick testing
         try {
             window.updateSunLighting = (h = 16) => updateSunLighting(mapRef.current, h);
@@ -599,12 +738,14 @@ export default function MapView() {
 
                 map.setTerrain({ source: "terrain", exaggeration: 1.4 });
 
-                // Lighting & Fog for photoreal satellite
+                // Lighting & Fog for photoreal satellite — apply once style/terrain becomes idle
                 try {
-                    enableGlobalLighting(map);
-                    enableFog(map);
-                    // Set initial sun position (late afternoon as default)
-                    updateSunLighting(map, 16);
+                    map.once("idle", () => {
+                        enableGlobalLighting(map);
+                        enableFog(map);
+                        // Set initial sun position (late afternoon as default)
+                        updateSunLighting(map, 16);
+                    });
                 } catch (e) { console.warn('Lighting init failed:', e); }
 
                 // LOD and 3D performance adjustments on zoom
@@ -620,22 +761,12 @@ export default function MapView() {
 
                 /* ===== HILLSHADE (TERRAIN VISUALIZATION) ===== */
                 try {
-                    map.addLayer({
-                        id: "terrain-hillshade",
-                        type: "hillshade",
-                        source: "terrain",
-                        paint: {
-                            "hillshade-exaggeration": 0.6,
-                            "hillshade-shadow-color": "#3d3d3d",
-                            "hillshade-highlight-color": "#ffffff",
-                            "hillshade-accent-color": "#9c8468"
-                        },
-                        layout: {
-                            visibility: layers.hillshade ? "visible" : "none"
-                        }
-                    });
+                    ensureHillshade(map);
+                    if (map.getLayer && map.getLayer("terrain-hillshade")) {
+                        map.setLayoutProperty("terrain-hillshade", "visibility", layers.hillshade ? "visible" : "none");
+                    }
                 } catch (e) {
-                    console.warn("Hillshade layer not supported:", e);
+                    console.warn("Hillshade ensure failed:", e);
                 }
 
                 /* ===== TERRAIN-AWARE FLOOD SOURCE ===== */
@@ -959,24 +1090,8 @@ export default function MapView() {
                 }
 
                 /* ===== 3D BUILDINGS ===== */
-                if (isMounted && map.getSource && map.getSource("openmaptiles")) {
-                    try {
-                        map.addLayer({
-                            id: "3d-buildings",
-                            source: "openmaptiles",
-                            "source-layer": "building",
-                            type: "fill-extrusion",
-                            minzoom: 14,
-                            paint: {
-                                "fill-extrusion-color": "#cbd5e1",
-                                "fill-extrusion-height": ["get", "render_height"],
-                                "fill-extrusion-base": ["get", "render_min_height"],
-                                "fill-extrusion-opacity": 0.9
-                            }
-                        });
-                    } catch (e) {
-                        console.warn('Could not add 3d-buildings layer:', e);
-                    }
+                if (isMounted) {
+                    try { add3DBuildings(map); } catch (e) { console.warn('Could not add 3d-buildings layer:', e); }
                 }
 
                 if (isMounted) setLoading(false);
@@ -2027,36 +2142,20 @@ export default function MapView() {
                 }, 300);
             }
 
-            // If satellite style, make cinematic camera and ensure 3D buildings + hillshade are present
-            if (mapStyle === "satellite") {
-                try {
-                    // Cinematic camera
-                    map.easeTo({
-                        pitch: 70,
-                        bearing: -25,
-                        zoom: Math.max(map.getZoom(), 14),
-                        duration: 1500
-                    });
-
-                    // Add hillshade and 3D buildings after style loads
-                    addHillshade(map);
-                    add3DBuildings(map);
-                    // Lighting & fog need re-applying after style change
-                    enableGlobalLighting(map);
-                    enableFog(map);
-                    updateSunLighting(map, 16);
-                } catch (e) {
-                    console.warn("Post-style satellite adjustments failed:", e);
+            // Clear elevation cache and rehydrate custom layers (terrain, hillshade, buildings, lighting)
+            try { elevationCache.clear(); } catch (e) {}
+            try {
+                // Keep a cinematic camera for satellite for UX
+                if (mapStyle === "satellite") {
+                    map.easeTo({ pitch: 70, bearing: -25, zoom: Math.max(map.getZoom(), 14), duration: 1500 });
                 }
-            } else {
-                // For non-satellite styles ensure 3D layer is present when possible
-                try {
-                    add3DBuildings(map);
-                } catch (e) {}
+
+                rehydrateCustomLayers(map);
+            } catch (e) {
+                console.warn("Post-style rehydrate failed:", e);
             }
 
             // Re-add other custom layers if needed
-            // Note: AQI, flood layers would need to be re-added here if needed
         });
     }, [mapStyle, loading, layers.traffic, layers.aqi, aqiGeo]);
 
@@ -2072,7 +2171,8 @@ export default function MapView() {
         };
 
         toggle("aqi-layer", layers.aqi);
-        toggle("flood-layer", layers.flood);
+        // If terrain-aware flood (depth) is enabled, hide the flat flood layer to avoid double-visuals
+        toggle("flood-layer", layers.flood && !layers.floodDepth);
         toggle("traffic-layer", layers.traffic);
         toggle("flood-depth-layer", layers.floodDepth);
         toggle("terrain-hillshade", layers.hillshade);
@@ -2869,124 +2969,3 @@ export default function MapView() {
     );
 }
 
-/* ====== Map Helpers: 3D Buildings + Hillshade ====== */
-function add3DBuildings(map) {
-    if (!map) return;
-    try {
-        if (map.getLayer && map.getLayer("3d-buildings")) return;
-
-        // Only add if the source exists in the current style
-        if (!map.getSource || !map.getSource("openmaptiles")) return;
-
-        map.addLayer({
-            id: "3d-buildings",
-            source: "openmaptiles",
-            "source-layer": "building",
-            type: "fill-extrusion",
-            minzoom: 14,
-            paint: {
-                "fill-extrusion-color": "#d1d1d1",
-                "fill-extrusion-height": ["get", "render_height"],
-                "fill-extrusion-base": ["get", "render_min_height"],
-                "fill-extrusion-opacity": 0.85
-            }
-        });
-    } catch (e) {
-        console.warn("add3DBuildings failed:", e);
-    }
-}
-
-function addHillshade(map) {
-    if (!map) return;
-    try {
-        if (map.getLayer && map.getLayer("terrain-hillshade")) return;
-
-        // Ensure terrain source exists first
-        if (!map.getSource || !map.getSource("terrain")) return;
-
-        map.addLayer({
-            id: "terrain-hillshade",
-            type: "hillshade",
-            source: "terrain",
-            paint: {
-                "hillshade-exaggeration": 0.6
-            }
-        });
-    } catch (e) {
-        console.warn("addHillshade failed:", e);
-    }
-}
-
-/* ====== Lighting, Fog, Sun Helpers ====== */
-function updateSunLighting(map, hour = 14) {
-    if (!map) return;
-    try {
-        const azimuth = (hour / 24) * 360;
-        const altitude = Math.max(15, 80 - Math.abs(12 - hour) * 5);
-        map.setLight({
-            anchor: "map",
-            position: [azimuth, altitude, 80],
-            intensity: 0.8,
-            color: "#ffffff"
-        });
-    } catch (e) {
-        console.warn("updateSunLighting failed:", e);
-    }
-}
-
-function enableGlobalLighting(map) {
-    if (!map) return;
-    try {
-        map.setLight({
-            anchor: "map",
-            position: [1.5, 90, 80],
-            intensity: 0.7,
-            color: "#ffffff"
-        });
-    } catch (e) { /* ignore */ }
-}
-
-function enableFog(map) {
-    if (!map) return;
-    try {
-        map.setFog({
-            range: [0.6, 10],
-            color: "#dbe7f3",
-            "horizon-blend": 0.2,
-            "star-intensity": 0
-        });
-    } catch (e) { /* ignore */ }
-}
-
-/* ====== Fly-through & Camera Helpers ====== */
-const defaultFlyPath = [
-    { center: [77.209, 28.6139], zoom: 14, pitch: 65, bearing: -20 },
-    { center: [77.2105, 28.6145], zoom: 15, pitch: 70, bearing: -40 },
-    { center: [77.212, 28.615], zoom: 16, pitch: 75, bearing: -60 }
-];
-
-function startFlyThrough(map, flyPath = defaultFlyPath) {
-    if (!map) return;
-    try {
-        setCinematicMode(true);
-        flyPath.forEach((step, i) => {
-            setTimeout(() => {
-                map.easeTo({ ...step, duration: 2500, easing: (t) => t * (2 - t) });
-                if (i === flyPath.length - 1) setTimeout(() => setCinematicMode(false), 2600);
-            }, i * 2600);
-        });
-    } catch (e) { console.warn('startFlyThrough failed:', e); }
-}
-
-function streetLevelView(map, lngLat) {
-    if (!map || !lngLat) return;
-    try {
-        setCinematicMode(true);
-        map.easeTo({ center: [lngLat.lng, lngLat.lat], zoom: 17, pitch: 80, bearing: Math.random() * 360, duration: 1800 });
-        setTimeout(() => setCinematicMode(false), 2000);
-    } catch (e) { console.warn('streetLevelView failed:', e); }
-}
-
-function setCinematicMode(active) {
-    try { document.body.classList.toggle('cinematic', !!active); } catch (e) {}
-}
