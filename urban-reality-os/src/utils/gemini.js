@@ -120,6 +120,67 @@ function clamp(val, min, max) {
   return Math.min(Math.max(Number(val) || 0, min), max);
 }
 
+/**
+ * Terrain-aware urban insight analysis
+ * Called on map click to explain why an area is at risk
+ */
+export async function getTerrainInsight(context) {
+  try {
+    const {
+      elevation = 0,
+      slope = 0,
+      floodRisk = 0,
+      heat = 0,
+      population = 0,
+      aqi = 0
+    } = context;
+
+    const prompt = `
+You are an urban planning expert.
+
+Context:
+- Elevation: ${elevation} meters
+- Slope: ${slope.toFixed(2)}
+- Flood risk score: ${floodRisk.toFixed(2)} (0-1 scale, higher = more risk)
+- Heat index: ${heat.toFixed(2)}
+- Population density: ${population > 0 ? population.toLocaleString() : 'Unknown'}
+- Air Quality Index: ${aqi}
+
+Explain in simple terms (4-5 sentences):
+1. Why this area is at risk (based on terrain and metrics)
+2. What terrain or infrastructure causes it
+3. One realistic mitigation strategy
+
+Avoid technical jargon. Write like you're explaining to a city planner or community leader.
+Tone: Professional, clear, actionable.
+`;
+
+    const API_BASE = import.meta.env.VITE_GEMINI_BACKEND_URL || "http://localhost:3001";
+    
+    const resp = await fetch(`${API_BASE}/api/urban-analysis`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt })
+    });
+
+    if (!resp.ok) {
+      throw new Error(`AI backend error ${resp.status}`);
+    }
+
+    const json = await resp.json();
+    return (
+      json.analysis ||
+      json.text ||
+      json.output ||
+      json.candidates?.[0]?.content?.parts?.[0]?.text ||
+      "Terrain analysis unavailable. Please check your connection."
+    );
+  } catch (err) {
+    console.error("getTerrainInsight failed:", err);
+    return "Terrain analysis temporarily unavailable. Please try again.";
+  }
+}
+
 // Future expansion stubs
 export const getPredictiveRiskAnalysis = async () => null;
 export const getRealtimeDecisionSupport = async () => null;

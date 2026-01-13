@@ -15,7 +15,9 @@ import { fetchIndiaMacroData } from "../utils/worldBank";
 import { calculateImpactModel } from "../utils/impactModel";
 import { fetchRealtimeAQI } from "../utils/aqi";
 import LocationPopup from "./LocationPopup";
-import DebugPanel from "./DebugPanel";
+import InsightPanel from "./InsightPanel";
+import MetricBar from "./MetricBar";
+import { getTerrainInsight } from "../utils/gemini";
 
 // Constants
 const BASE_YEAR = 2025;
@@ -385,6 +387,8 @@ export default function MapView() {
     const [floodMode, setFloodMode] = useState(false);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [terrainInsight, setTerrainInsight] = useState(null);
+    const [insightLoading, setInsightLoading] = useState(false);
 
     const [layers, setLayers] = useState({
         aqi: true,
@@ -1023,6 +1027,16 @@ export default function MapView() {
             const y = yearRef.current;
             const macroData = macroDataRef.current;
 
+            // Smooth camera transition to clicked location
+            mapRef.current.easeTo({
+                center: [lng, lat],
+                zoom: Math.max(mapRef.current.getZoom(), 14),
+                pitch: 65,
+                bearing: -30,
+                duration: 1800,
+                easing: (t) => t * (2 - t) // Ease-out curve
+            });
+
             // Start a new popup session
             const sessionId = ++popupSessionRef.current;
 
@@ -1285,6 +1299,28 @@ export default function MapView() {
                             heatIndex: Math.round(heatIndex * 100) / 100,
                             drainageScore: Math.round(drainageScore * 100) / 100
                         };
+
+                        // Generate terrain insight on click
+                        try {
+                            setInsightLoading(true);
+                            const insight = await getTerrainInsight({
+                                elevation: elevation ?? 0,
+                                slope: slope,
+                                floodRisk: drainageScore,
+                                heat: heatIndex,
+                                population: impact.population,
+                                aqi: finalAQI
+                            });
+                            if (popupSessionRef.current === sessionId) {
+                                setTerrainInsight(insight);
+                            }
+                        } catch (e) {
+                            console.warn("Terrain insight failed:", e);
+                        } finally {
+                            if (popupSessionRef.current === sessionId) {
+                                setInsightLoading(false);
+                            }
+                        }
 
                         const aiPayload = {
                             zone: placeName,
@@ -1979,20 +2015,31 @@ export default function MapView() {
         toggle("flood-depth-layer", layers.floodDepth);
         toggle("terrain-hillshade", layers.hillshade);
         toggle("terrain-flood-layer", layers.flood);
-    }, [layers, loading]);
+        
+        // Add flood animation class when flood mode is active
+        if (mapRef.current) {
+            const floodLayerEl = document.querySelector('.maplibregl-map');
+            if (floodLayerEl) {
+                if (floodMode && layers.floodDepth) {
+                    floodLayerEl.classList.add('flood-layer');
+                } else {
+                    floodLayerEl.classList.remove('flood-layer');
+                }
+            }
+        }
+    }, [layers, loading, floodMode]);
 
     /* ================= CINEMATIC CAMERA ================= */
     const flyToPoint = useCallback((lng, lat, zoom = 14, pitch = 65, bearing = 0) => {
         if (!mapRef.current) return;
-
-        mapRef.current.flyTo({
+        // Use easeTo for smoother, cinematic transitions
+        mapRef.current.easeTo({
             center: [lng, lat],
             zoom,
             pitch,
             bearing,
-            speed: 0.6,
-            curve: 1.8,
-            essential: true
+            duration: 1800,
+            easing: (t) => t * (2 - t) // Ease-out curve
         });
     }, []);
 
@@ -2002,16 +2049,15 @@ export default function MapView() {
 
         const sessionId = ++popupSessionRef.current;
 
-        // Fly to the selected location
+        // Smooth camera transition to selected location
         if (mapRef.current) {
-            mapRef.current.flyTo({
+            mapRef.current.easeTo({
                 center: [lng, lat],
                 zoom: 14,
                 pitch: 65,
                 bearing: mapRef.current.getBearing(),
-                speed: 0.6,
-                curve: 1.8,
-                essential: true
+                duration: 1800,
+                easing: (t) => t * (2 - t)
             });
         }
 
@@ -2713,7 +2759,39 @@ export default function MapView() {
 
             <EconomicPanel data={impactData} demographics={demographics} analysis={urbanAnalysis} analysisLoading={analysisLoading} />
             <CitySuggestions map={mapRef.current} visible={showSuggestions} />
-            <DebugPanel data={debugData} />
+            <InsightPanel 
+                insight={terrainInsight} 
+                loading={insightLoading}
+                onExplain={async () => {
+                    if (!mapRef.current || !activeLocation) return;
+                    setInsightLoading(true);
+                    try {
+                        const { lng, lat } = activeLocation;
+                        const lngLat = { lng, lat };
+                        const elevation = getElevation(mapRef.current, lngLat);
+                        const slope = getSlope(mapRef.current, lngLat);
+                        const heat = calculateHeatIndex(mapRef.current, lngLat);
+                        const drainage = getDrainageScore(mapRef.current, lngLat);
+                        const aqi = lastAQIRef.current?.aqi || 0;
+                        const population = demographics?.population || 0;
+
+                        const insight = await getTerrainInsight({
+                            elevation: elevation ?? 0,
+                            slope: slope,
+                            floodRisk: drainage,
+                            heat: heat,
+                            population: population,
+                            aqi: aqi
+                        });
+                        setTerrainInsight(insight);
+                    } catch (e) {
+                        console.warn("Terrain insight failed:", e);
+                        setTerrainInsight("Unable to generate insight. Please try again.");
+                    } finally {
+                        setInsightLoading(false);
+                    }
+                }}
+            />
 
             <div
                 ref={mapContainer}
