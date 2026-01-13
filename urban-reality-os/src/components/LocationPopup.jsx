@@ -1,7 +1,74 @@
-import React from "react";
+import React, { useState, memo } from "react";
 import "./LocationPopup.css";
 
-export default function LocationPopup({
+// AQI Bar Component
+function AQIBar({ value }) {
+    if (!value || value === "N/A") return null;
+    
+    const numValue = typeof value === "number" ? value : parseInt(value);
+    if (isNaN(numValue)) return null;
+    
+    const percent = Math.min((numValue / 500) * 100, 100);
+    
+    const getColor = () => {
+        if (numValue >= 300) return "#ef4444"; // red
+        if (numValue >= 200) return "#f97316"; // orange
+        if (numValue >= 100) return "#eab308"; // yellow
+        return "#22c55e"; // green
+    };
+    
+    return (
+        <div className="aqi-bar-container">
+            <div className="aqi-bar-track">
+                <div
+                    className="aqi-bar-fill"
+                    style={{
+                        width: `${percent}%`,
+                        backgroundColor: getColor(),
+                        transition: "all 0.7s ease"
+                    }}
+                />
+            </div>
+            <div className="aqi-bar-label">Severity Index</div>
+        </div>
+    );
+}
+
+// Data Badge Component
+function DataBadge({ label, live = false }) {
+    return (
+        <span className={`data-badge ${live ? "data-badge-live" : ""}`}>
+            {live ? "LIVE" : label}
+        </span>
+    );
+}
+
+// Collapsible Section Component
+function Section({ title, children, defaultOpen = true, badge }) {
+    const [open, setOpen] = useState(defaultOpen);
+    
+    return (
+        <section className="location-popup-card">
+            <div
+                className="location-popup-card-header"
+                onClick={() => setOpen(!open)}
+            >
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <h3>{title}</h3>
+                    {badge && <DataBadge {...badge} />}
+                </div>
+                <span className="section-toggle">{open ? "−" : "+"}</span>
+            </div>
+            {open && (
+                <div className="section-content">
+                    {children}
+                </div>
+            )}
+        </section>
+    );
+}
+
+function LocationPopup({
     placeName,
     lat,
     lng,
@@ -34,13 +101,15 @@ export default function LocationPopup({
     const growthRate = demographics?.growthRate ?? null;
     const migrants = demographics?.migrantsPct ?? null;
 
-    const pm25 = realTimeAQI?.components?.pm25;
-    const pm10 = realTimeAQI?.components?.pm10;
+    // Fix: Use direct pm25/pm10 from realTimeAQI (not components)
+    const pm25 = realTimeAQI?.pm25 ?? realTimeAQI?.components?.pm25;
+    const pm10 = realTimeAQI?.pm10 ?? realTimeAQI?.components?.pm10;
     const aqiValue = finalAQI ?? realTimeAQI?.aqi ?? "N/A";
 
     const getAQIClass = (aqi) => {
         if (!aqi || aqi === "N/A") return "";
-        const val = parseInt(aqi);
+        const val = typeof aqi === "number" ? aqi : parseInt(aqi);
+        if (isNaN(val)) return "";
         if (val <= 50) return "aqi-good";
         if (val <= 100) return "aqi-moderate";
         if (val <= 200) return "aqi-poor";
@@ -54,6 +123,9 @@ export default function LocationPopup({
         return num.toLocaleString();
     };
 
+    const isRealTimeAQI = !!realTimeAQI?.aqi;
+    const hasWorldBankData = !!macroData;
+
     /* ================= UI ================= */
 
     return (
@@ -66,12 +138,15 @@ export default function LocationPopup({
             </header>
 
             {/* AIR QUALITY CARD */}
-            <section className="location-popup-card" id="aqi-card">
-                <h3>Air Quality</h3>
+            <Section 
+                title="Air Quality" 
+                badge={isRealTimeAQI ? { live: true } : null}
+            >
                 <div className={`location-popup-metric ${getAQIClass(aqiValue)}`} id="aqi-value-container">
                     <span>AQI</span>
                     <strong id="aqi-value">{aqiValue}</strong>
                 </div>
+                <AQIBar value={aqiValue} />
                 <div className="location-popup-metric muted">
                     <span>PM2.5</span>
                     <strong id="pm25-value">{pm25 ? `${pm25.toFixed(1)}` : "—"}</strong>
@@ -80,11 +155,13 @@ export default function LocationPopup({
                     <span>PM10</span>
                     <strong id="pm10-value">{pm10 ? `${pm10.toFixed(1)}` : "—"}</strong>
                 </div>
-            </section>
+            </Section>
 
             {/* WEATHER CARD */}
-            <section className="location-popup-card" id="weather-card">
-                <h3>Weather</h3>
+            <Section 
+                title="Weather"
+                badge={{ live: true, label: "Open-Meteo" }}
+            >
                 <div className="location-popup-metric">
                     <span>🌧 Rainfall</span>
                     <strong id="rainfall-value">{rainfall !== null ? `${rainfall} mm` : "0 mm"}</strong>
@@ -93,11 +170,13 @@ export default function LocationPopup({
                     <span>☁ Rain Prob.</span>
                     <strong id="rain-probability-value">{rainProbability !== null ? `${rainProbability}%` : "0%"}</strong>
                 </div>
-            </section>
+            </Section>
 
             {/* POPULATION CARD */}
-            <section className="location-popup-card" id="population-card">
-                <h3>Population</h3>
+            <Section 
+                title="Population"
+                badge={hasWorldBankData ? { label: "World Bank" } : null}
+            >
                 <div className="location-popup-metric big">
                     <span id="population-value">👥 {formatPopulation(population)}</span>
                 </div>
@@ -109,7 +188,7 @@ export default function LocationPopup({
                     <span>Migrants</span>
                     <strong id="migrants-value">{migrants ? `${migrants}%` : "—"}</strong>
                 </div>
-            </section>
+            </Section>
 
             {/* AI ANALYSIS SECTION */}
             <div className="location-popup-analysis-container" id="analysis-container">
@@ -123,7 +202,11 @@ export default function LocationPopup({
                     </div>
                 ) : (
                     <div className="location-popup-error" id="analysis-error">
-                        ⚠️ AI Location Analysis unavailable
+                        <div className="error-content">
+                            🤖 AI insights unavailable.
+                            <br />
+                            <span className="error-subtext">Showing baseline data only.</span>
+                        </div>
                     </div>
                 )}
             </div>
@@ -141,3 +224,5 @@ export default function LocationPopup({
         </div>
     );
 }
+
+export default memo(LocationPopup);

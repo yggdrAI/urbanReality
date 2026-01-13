@@ -29,19 +29,12 @@ html::-webkit-scrollbar, body::-webkit-scrollbar {
   z-index: 1100; /* below controls which we set higher */
 }
 .maplibregl-popup-content {
-  background: linear-gradient(
-    180deg,
-    rgba(2, 6, 23, 0.97),
-    rgba(2, 6, 23, 0.92)
-  ) !important;
+  background: transparent !important;
+  box-shadow: none !important;
   padding: 0 !important;
-  border-radius: 16px;
-  box-shadow: 0 30px 60px rgba(0, 0, 0, 0.8);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  color: #e6eef8;
 }
 .maplibregl-popup-tip {
-  border-top-color: rgba(2, 6, 23, 0.95) !important;
+  display: none !important;
 }
 
 /* Ensure navigation and other controls sit above popups so they never get obscured */

@@ -316,8 +316,8 @@ export default function MapView() {
                                         aqi: r.aqi,
                                         city: city.name,
                                         level: r.category || null,
-                                        pm25: r.components?.pm25,
-                                        pm10: r.components?.pm10
+                                        pm25: r.pm25 ?? null,
+                                        pm10: r.pm10 ?? null
                                     },
                                     geometry: { type: "Point", coordinates: [city.lng, city.lat] }
                                 };
@@ -1042,8 +1042,8 @@ export default function MapView() {
                                     aqi: r.aqi,
                                     city: city.name,
                                     level: r.category || null,
-                                    pm25: r.components?.pm25 ?? null,
-                                    pm10: r.components?.pm10 ?? null
+                                    pm25: r.pm25 ?? null,
+                                    pm10: r.pm10 ?? null
                                 },
                                 geometry: { type: "Point", coordinates: [city.lng, city.lat] }
                             };
@@ -1078,6 +1078,78 @@ export default function MapView() {
 
         return () => clearInterval(interval);
     }, [layers.aqi]);
+
+    /* ================= AQI LAYER HOVER SYNC ================= */
+    useEffect(() => {
+        if (!mapRef.current || !layers.aqi || loading) return;
+
+        const map = mapRef.current;
+        if (!map.getLayer("aqi-layer")) return;
+
+        let hoverTimeout;
+        
+        const debouncedHoverUpdate = (e) => {
+            clearTimeout(hoverTimeout);
+            hoverTimeout = setTimeout(() => {
+                if (!map.getLayer("aqi-layer") || !e.features || e.features.length === 0) return;
+                
+                const feature = e.features[0];
+                const props = feature.properties;
+                const coords = e.lngLat;
+
+                // Update popup with hover data (if popup is open)
+                if (popupRef.current && popupRef.current.isOpen() && popupRootRef.current) {
+                    try {
+                        const hoverAQI = {
+                            aqi: props.aqi,
+                            pm25: props.pm25 ?? null,
+                            pm10: props.pm10 ?? null
+                        };
+
+                        popupRootRef.current.render(
+                            <LocationPopup
+                                placeName={props.city || "Hover Location"}
+                                lat={coords.lat}
+                                lng={coords.lng}
+                                year={yearRef.current}
+                                baseYear={BASE_YEAR}
+                                realTimeAQI={hoverAQI}
+                                finalAQI={props.aqi}
+                                rainfall={0}
+                                rainProbability={null}
+                                macroData={macroDataRef.current}
+                                impact={null}
+                                demographics={null}
+                                analysis={null}
+                                analysisLoading={false}
+                                openWeatherKey={OPENWEATHER_KEY}
+                                onSave={null}
+                            />
+                        );
+                    } catch (err) {
+                        console.warn("Hover update failed:", err);
+                    }
+                }
+
+                // Change cursor on hover
+                map.getCanvas().style.cursor = "pointer";
+            }, 120);
+        };
+
+        const handleMouseLeave = () => {
+            clearTimeout(hoverTimeout);
+            map.getCanvas().style.cursor = "";
+        };
+
+        map.on("mousemove", "aqi-layer", debouncedHoverUpdate);
+        map.on("mouseleave", "aqi-layer", handleMouseLeave);
+
+        return () => {
+            clearTimeout(hoverTimeout);
+            map.off("mousemove", "aqi-layer", debouncedHoverUpdate);
+            map.off("mouseleave", "aqi-layer", handleMouseLeave);
+        };
+    }, [layers.aqi, loading]);
 
     /* ================= FLOOD DEPTH ANIMATION ================= */
     useEffect(() => {
