@@ -1,4 +1,5 @@
 import React from "react";
+import "./LocationPopup.css";
 
 export default function LocationPopup({
     placeName,
@@ -22,7 +23,7 @@ export default function LocationPopup({
 
     onSave
 }) {
-    /* ================= SAFE DATA ================= */
+    /* ================= DATA PROCESSING ================= */
 
     const population =
         demographics?.population ??
@@ -31,162 +32,112 @@ export default function LocationPopup({
         null;
 
     const growthRate = demographics?.growthRate ?? null;
-    const tfr = demographics?.tfr ?? null;
     const migrants = demographics?.migrantsPct ?? null;
 
-    const pm25 = realTimeAQI?.components?.pm25 ?? "N/A";
-    const pm10 = realTimeAQI?.components?.pm10 ?? "N/A";
-
+    const pm25 = realTimeAQI?.components?.pm25;
+    const pm10 = realTimeAQI?.components?.pm10;
     const aqiValue = finalAQI ?? realTimeAQI?.aqi ?? "N/A";
+
+    const getAQIClass = (aqi) => {
+        if (!aqi || aqi === "N/A") return "";
+        const val = parseInt(aqi);
+        if (val <= 50) return "aqi-good";
+        if (val <= 100) return "aqi-moderate";
+        if (val <= 200) return "aqi-poor";
+        return "aqi-severe";
+    };
+
+    const formatPopulation = (num) => {
+        if (!num) return "N/A";
+        if (num >= 10000000) return `${(num / 10000000).toFixed(2)} Cr`;
+        if (num >= 100000) return `${(num / 100000).toFixed(2)} L`;
+        return num.toLocaleString();
+    };
 
     /* ================= UI ================= */
 
     return (
-        <div
-            style={{
-                width: 300,
-                padding: 16,
-                background: "rgba(2,6,23,0.96)",
-                color: "#e5e7eb",
-                borderRadius: 14,
-                fontFamily: "Inter, system-ui, sans-serif",
-                boxShadow: "0 20px 40px rgba(0,0,0,0.45)"
-            }}
-        >
-            {/* HEADER */}
-            <div style={{ marginBottom: 12 }}>
-                <div style={{ fontSize: 16, fontWeight: 600 }}>{placeName}</div>
-                <div style={{ fontSize: 12, opacity: 0.6 }}>
-                    {lat.toFixed(4)}, {lng.toFixed(4)}
+        <div className="location-popup-panel" id="location-popup">
+            <header className="location-popup-header">
+                <h2 id="location-name">📍 {placeName || "Selected Location"}</h2>
+                <span className="location-popup-coords" id="location-coords">
+                    {lat?.toFixed(4)}, {lng?.toFixed(4)}
+                </span>
+            </header>
+
+            {/* AIR QUALITY CARD */}
+            <section className="location-popup-card" id="aqi-card">
+                <h3>Air Quality</h3>
+                <div className={`location-popup-metric ${getAQIClass(aqiValue)}`} id="aqi-value-container">
+                    <span>AQI</span>
+                    <strong id="aqi-value">{aqiValue}</strong>
                 </div>
-            </div>
+                <div className="location-popup-metric muted">
+                    <span>PM2.5</span>
+                    <strong id="pm25-value">{pm25 ? `${pm25.toFixed(1)}` : "—"}</strong>
+                </div>
+                <div className="location-popup-metric muted">
+                    <span>PM10</span>
+                    <strong id="pm10-value">{pm10 ? `${pm10.toFixed(1)}` : "—"}</strong>
+                </div>
+            </section>
 
-            {/* AQI */}
-            <Section title="Air Quality">
-                <Row label="AQI" value={aqiValue} />
-                <Row label="PM2.5" value={`${pm25} µg/m³`} />
-                <Row label="PM10" value={`${pm10} µg/m³`} />
-            </Section>
+            {/* WEATHER CARD */}
+            <section className="location-popup-card" id="weather-card">
+                <h3>Weather</h3>
+                <div className="location-popup-metric">
+                    <span>🌧 Rainfall</span>
+                    <strong id="rainfall-value">{rainfall !== null ? `${rainfall} mm` : "0 mm"}</strong>
+                </div>
+                <div className="location-popup-metric">
+                    <span>☁ Rain Prob.</span>
+                    <strong id="rain-probability-value">{rainProbability !== null ? `${rainProbability}%` : "0%"}</strong>
+                </div>
+            </section>
 
-            {/* WEATHER */}
-            <Section title="Weather">
-                <Row label="Rainfall" value={`${rainfall ?? 0} mm`} />
-                <Row
-                    label="Rain Probability"
-                    value={
-                        rainProbability !== null
-                            ? `${rainProbability}%`
-                            : "N/A"
-                    }
-                />
-            </Section>
+            {/* POPULATION CARD */}
+            <section className="location-popup-card" id="population-card">
+                <h3>Population</h3>
+                <div className="location-popup-metric big">
+                    <span id="population-value">👥 {formatPopulation(population)}</span>
+                </div>
+                <div className="location-popup-metric muted">
+                    <span>Growth Rate</span>
+                    <strong id="growth-rate-value">{growthRate ? `${growthRate}%` : "—"}</strong>
+                </div>
+                <div className="location-popup-metric muted">
+                    <span>Migrants</span>
+                    <strong id="migrants-value">{migrants ? `${migrants}%` : "—"}</strong>
+                </div>
+            </section>
 
-            {/* POPULATION */}
-            <Section title="Population">
-                <Row
-                    label="Population"
-                    value={
-                        population
-                            ? population.toLocaleString()
-                            : "N/A"
-                    }
-                />
-                <Row
-                    label="Growth Rate"
-                    value={growthRate ? `${growthRate}%` : "N/A"}
-                />
-                <Row
-                    label="TFR"
-                    value={tfr ?? "N/A"}
-                />
-                <Row
-                    label="Migrants"
-                    value={migrants ? `${migrants}%` : "N/A"}
-                />
-            </Section>
-
-            {/* AI ANALYSIS */}
-            <Section title="AI Location Analysis">
-                {analysisLoading && (
-                    <div style={{ fontSize: 13, opacity: 0.7 }}>
-                        Generating AI analysis…
+            {/* AI ANALYSIS SECTION */}
+            <div className="location-popup-analysis-container" id="analysis-container">
+                {analysisLoading ? (
+                    <div className="location-popup-analysis" id="analysis-loading">
+                        ⏳ Generating AI analysis...
                     </div>
-                )}
-
-                {!analysisLoading && analysis && (
-                    <div
-                        style={{
-                            fontSize: 13,
-                            lineHeight: 1.5,
-                            color: "#e2e8f0"
-                        }}
-                    >
+                ) : analysis ? (
+                    <div className="location-popup-analysis" id="analysis-text">
                         {analysis}
                     </div>
-                )}
-
-                {!analysisLoading && !analysis && (
-                    <div style={{ fontSize: 13, opacity: 0.5 }}>
-                        No analysis available
+                ) : (
+                    <div className="location-popup-error" id="analysis-error">
+                        ⚠️ AI Location Analysis unavailable
                     </div>
                 )}
-            </Section>
+            </div>
 
-            {/* SAVE */}
+            {/* SAVE BUTTON */}
             {onSave && (
                 <button
+                    id="save-location-btn"
+                    className="location-popup-save-btn"
                     onClick={() => onSave(placeName)}
-                    style={{
-                        marginTop: 12,
-                        width: "100%",
-                        padding: "10px 12px",
-                        borderRadius: 10,
-                        border: "none",
-                        background: "#f59e0b",
-                        color: "#020617",
-                        fontWeight: 600,
-                        cursor: "pointer"
-                    }}
                 >
                     ⭐ Save Location
                 </button>
             )}
-        </div>
-    );
-}
-
-/* ================= SMALL UI HELPERS ================= */
-
-function Section({ title, children }) {
-    return (
-        <div style={{ marginBottom: 14 }}>
-            <div
-                style={{
-                    fontSize: 13,
-                    fontWeight: 600,
-                    marginBottom: 6,
-                    color: "#93c5fd"
-                }}
-            >
-                {title}
-            </div>
-            {children}
-        </div>
-    );
-}
-
-function Row({ label, value }) {
-    return (
-        <div
-            style={{
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: 13,
-                marginBottom: 4
-            }}
-        >
-            <span style={{ opacity: 0.7 }}>{label}</span>
-            <span style={{ fontWeight: 500 }}>{value}</span>
         </div>
     );
 }

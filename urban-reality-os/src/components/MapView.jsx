@@ -90,6 +90,7 @@ export default function MapView() {
     const flyThroughTimeoutsRef = useRef([]);
     const rainfallRef = useRef(0); // Store current rainfall for flood animation
     const macroDataRef = useRef(null);
+    const lastAQIRef = useRef(null); // Persist AQI across renders
 
     const [year, setYear] = useState(INITIAL_YEAR);
     const [impactData, setImpactData] = useState(null);
@@ -212,13 +213,13 @@ export default function MapView() {
                         lng={aLng}
                         year={year}
                         baseYear={BASE_YEAR}
-                        realTimeAQI={null}
+                        realTimeAQI={lastAQIRef.current}
                         finalAQI={projectedAQI}
                         rainfall={baseRainfall}
                         rainProbability={null}
                         macroData={worldBank}
                         impact={impact}
-                        demographics={{ population: impact.population, growthRate: 1.6, tfr: 1.9, migrantsPct: 21 }}
+                        demographics={demographics}
                         analysis={urbanAnalysis}
                         analysisLoading={analysisLoading}
                         openWeatherKey={OPENWEATHER_KEY}
@@ -615,14 +616,14 @@ export default function MapView() {
                         lng={lng}
                         year={y}
                         baseYear={BASE_YEAR}
-                        realTimeAQI={null}
+                        realTimeAQI={lastAQIRef.current}
                         finalAQI={null}
                         rainfall={0}
                         rainProbability={null}
-                        macroData={null}
+                        macroData={macroDataRef.current}
                         impact={null}
-                        demographics={null}
-                        analysis={null}
+                        demographics={demographics}
+                        analysis={urbanAnalysis}
                         analysisLoading={true}
                         openWeatherKey={OPENWEATHER_KEY}
                         onSave={null}
@@ -689,6 +690,7 @@ export default function MapView() {
                 const rainfall = rainData ? rainData.rain : 0;
                 const rainProbability = rainData ? rainData.probability : 0;
                 rainfallRef.current = rainfall; // Store for flood animation
+                lastAQIRef.current = realTimeAQI; // Persist AQI for re-renders
 
                 // Time Factor (use BASE_YEAR)
                 const yearsElapsed = y - BASE_YEAR;
@@ -802,8 +804,8 @@ export default function MapView() {
                                     macroData={macroData}
                                     impact={impact}
                                     demographics={demographics}
-                                    analysis={null}
-                                    analysisLoading={true}
+                                    analysis={urbanAnalysis}
+                                    analysisLoading={analysisLoading}
                                     openWeatherKey={OPENWEATHER_KEY}
                                     onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
                                 />
@@ -820,31 +822,7 @@ export default function MapView() {
                         setAnalysisLoading(true);
                         setUrbanAnalysis(null);
                         // show loading state in popup if already mounted
-                        /* AI Analysis Loading State - Render in existing root */
-                        try {
-                            if (popupRootRef.current && popupRef.current?.isOpen() && popupSessionRef.current === sessionId) {
-                                popupRootRef.current.render(
-                                    <LocationPopup
-                                        placeName={placeName}
-                                        lat={lat}
-                                        lng={lng}
-                                        year={y}
-                                        baseYear={BASE_YEAR}
-                                        realTimeAQI={realTimeAQI}
-                                        finalAQI={finalAQI}
-                                        rainfall={rainfall}
-                                        rainProbability={rainProbability}
-                                        macroData={macroData}
-                                        impact={impact}
-                                        demographics={demographics}
-                                        analysis={null}
-                                        analysisLoading={true}
-                                        openWeatherKey={OPENWEATHER_KEY}
-                                        onSave={(name) => { if (window.saveLocation) window.saveLocation(name, lat, lng); }}
-                                    />
-                                );
-                            }
-                        } catch (e) { console.warn("AI loading render skipped:", e); }
+                        /* AI Analysis Loading State - State already set above, popup will re-render via state */
 
                         // Build sanitized payload for AI (explain-only)
                         const aiPayload = {
@@ -868,9 +846,10 @@ export default function MapView() {
                         // Race condition check: only update if this is still the latest request
                         if (lastRequestTimeRef.current === requestTime) {
                             setUrbanAnalysis(analysis || "No analysis available.");
+                            setAnalysisLoading(false);
 
                             // NOTE: Gemini provides explanatory analysis only. Do not overwrite deterministic loss here.
-                            // Re-render popup React root (if present) with new analysis
+                            // Re-render popup React root (if present) with new analysis from state
                             try {
                                 if (
                                     popupRootRef.current &&
@@ -904,7 +883,8 @@ export default function MapView() {
                     } catch (err) {
                         if (lastRequestTimeRef.current === requestTime && popupSessionRef.current === sessionId) {
                             console.error("AI Analysis Failed", err);
-                            setUrbanAnalysis('Analysis unavailable');
+                            setUrbanAnalysis(null);
+                            setAnalysisLoading(false);
                             try {
                                 if (popupRootRef.current && popupRef.current?.isOpen() && popupSessionRef.current === sessionId) {
                                     popupRootRef.current.render(
