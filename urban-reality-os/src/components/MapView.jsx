@@ -50,6 +50,10 @@ const TOMTOM_KEY = import.meta.env.VITE_TOMTOM_API_KEY;
 // OpenWeather Air Pollution API key (set VITE_OPENWEATHER_API_KEY in .env)
 // Get free API key from: https://openweathermap.org/api/air-pollution
 const OPENWEATHER_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY || "";
+const MAPTILER_KEY = "UQBNCVHquLf1PybiywBt";
+const SATELLITE_STYLE = `https://api.maptiler.com/maps/hybrid/style.json?key=${MAPTILER_KEY}`;
+const TERRAIN_STYLE = `https://api.maptiler.com/maps/basic-v2/style.json?key=${MAPTILER_KEY}`;
+const STREET_STYLE = `https://api.maptiler.com/maps/streets-v2/style.json?key=${MAPTILER_KEY}`;
 
 // --- Terrain Utils ---
 const TERRAIN_SAMPLE_DELTA = 0.0005;
@@ -1993,6 +1997,30 @@ export default function MapView() {
                 }, 300);
             }
 
+            // If satellite style, make cinematic camera and ensure 3D buildings + hillshade are present
+            if (mapStyle === "satellite") {
+                try {
+                    // Cinematic camera
+                    map.easeTo({
+                        pitch: 70,
+                        bearing: -25,
+                        zoom: Math.max(map.getZoom(), 14),
+                        duration: 1500
+                    });
+
+                    // Add hillshade and 3D buildings after style loads
+                    addHillshade(map);
+                    add3DBuildings(map);
+                } catch (e) {
+                    console.warn("Post-style satellite adjustments failed:", e);
+                }
+            } else {
+                // For non-satellite styles ensure 3D layer is present when possible
+                try {
+                    add3DBuildings(map);
+                } catch (e) {}
+            }
+
             // Re-add other custom layers if needed
             // Note: AQI, flood layers would need to be re-added here if needed
         });
@@ -2805,4 +2833,52 @@ export default function MapView() {
             />
         </>
     );
+}
+
+/* ====== Map Helpers: 3D Buildings + Hillshade ====== */
+function add3DBuildings(map) {
+    if (!map) return;
+    try {
+        if (map.getLayer && map.getLayer("3d-buildings")) return;
+
+        // Only add if the source exists in the current style
+        if (!map.getSource || !map.getSource("openmaptiles")) return;
+
+        map.addLayer({
+            id: "3d-buildings",
+            source: "openmaptiles",
+            "source-layer": "building",
+            type: "fill-extrusion",
+            minzoom: 14,
+            paint: {
+                "fill-extrusion-color": "#d1d1d1",
+                "fill-extrusion-height": ["get", "render_height"],
+                "fill-extrusion-base": ["get", "render_min_height"],
+                "fill-extrusion-opacity": 0.85
+            }
+        });
+    } catch (e) {
+        console.warn("add3DBuildings failed:", e);
+    }
+}
+
+function addHillshade(map) {
+    if (!map) return;
+    try {
+        if (map.getLayer && map.getLayer("terrain-hillshade")) return;
+
+        // Ensure terrain source exists first
+        if (!map.getSource || !map.getSource("terrain")) return;
+
+        map.addLayer({
+            id: "terrain-hillshade",
+            type: "hillshade",
+            source: "terrain",
+            paint: {
+                "hillshade-exaggeration": 0.6
+            }
+        });
+    } catch (e) {
+        console.warn("addHillshade failed:", e);
+    }
 }
