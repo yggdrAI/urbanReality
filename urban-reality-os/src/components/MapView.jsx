@@ -567,6 +567,13 @@ export default function MapView() {
 
         map.addControl(new maplibregl.NavigationControl(), "top-right");
 
+        // Expose debug helpers to window for quick testing
+        try {
+            window.updateSunLighting = (h = 16) => updateSunLighting(mapRef.current, h);
+            window.startFlyThrough = () => startFlyThrough(mapRef.current);
+            window.streetLevelView = (lngLat) => streetLevelView(mapRef.current, lngLat);
+        } catch (e) {}
+
         const loadMapData = async () => {
             try {
                 setLoading(true);
@@ -591,6 +598,25 @@ export default function MapView() {
                 });
 
                 map.setTerrain({ source: "terrain", exaggeration: 1.4 });
+
+                // Lighting & Fog for photoreal satellite
+                try {
+                    enableGlobalLighting(map);
+                    enableFog(map);
+                    // Set initial sun position (late afternoon as default)
+                    updateSunLighting(map, 16);
+                } catch (e) { console.warn('Lighting init failed:', e); }
+
+                // LOD and 3D performance adjustments on zoom
+                try {
+                    map.on('zoom', () => {
+                        const z = map.getZoom();
+                        // Terrain LOD
+                        try { map.setTerrain({ source: 'terrain', exaggeration: z > 13 ? 1.4 : 0.8 }); } catch (e) {}
+                        // 3D buildings visibility
+                        try { if (map.getLayer('3d-buildings')) map.setLayoutProperty('3d-buildings', 'visibility', z > 14 ? 'visible' : 'none'); } catch (e) {}
+                    });
+                } catch (e) { console.warn('Zoom handlers failed:', e); }
 
                 /* ===== HILLSHADE (TERRAIN VISUALIZATION) ===== */
                 try {
@@ -1828,11 +1854,15 @@ export default function MapView() {
                     features: floodFeatures
                 });
 
-                // Update water flow arrows after flood update
-                if (map.getLayer("water-flow-arrows") && 
-                    map.getLayoutProperty("water-flow-arrows", "visibility") === "visible") {
-                    updateWaterFlow(map);
-                }
+                		// Update water flow arrows after flood update (throttled)
+                		if (map.getLayer("water-flow-arrows") && 
+                		    map.getLayoutProperty("water-flow-arrows", "visibility") === "visible") {
+                		    if (throttledUpdateRef.current) {
+                		        throttledUpdateRef.current(() => updateWaterFlow(map));
+                		    } else {
+                		        updateWaterFlow(map);
+                		    }
+                		}
             }
 
             // Keep original flood-depth source for backward compatibility
@@ -2011,6 +2041,10 @@ export default function MapView() {
                     // Add hillshade and 3D buildings after style loads
                     addHillshade(map);
                     add3DBuildings(map);
+                    // Lighting & fog need re-applying after style change
+                    enableGlobalLighting(map);
+                    enableFog(map);
+                    updateSunLighting(map, 16);
                 } catch (e) {
                     console.warn("Post-style satellite adjustments failed:", e);
                 }
@@ -2881,4 +2915,78 @@ function addHillshade(map) {
     } catch (e) {
         console.warn("addHillshade failed:", e);
     }
+}
+
+/* ====== Lighting, Fog, Sun Helpers ====== */
+function updateSunLighting(map, hour = 14) {
+    if (!map) return;
+    try {
+        const azimuth = (hour / 24) * 360;
+        const altitude = Math.max(15, 80 - Math.abs(12 - hour) * 5);
+        map.setLight({
+            anchor: "map",
+            position: [azimuth, altitude, 80],
+            intensity: 0.8,
+            color: "#ffffff"
+        });
+    } catch (e) {
+        console.warn("updateSunLighting failed:", e);
+    }
+}
+
+function enableGlobalLighting(map) {
+    if (!map) return;
+    try {
+        map.setLight({
+            anchor: "map",
+            position: [1.5, 90, 80],
+            intensity: 0.7,
+            color: "#ffffff"
+        });
+    } catch (e) { /* ignore */ }
+}
+
+function enableFog(map) {
+    if (!map) return;
+    try {
+        map.setFog({
+            range: [0.6, 10],
+            color: "#dbe7f3",
+            "horizon-blend": 0.2,
+            "star-intensity": 0
+        });
+    } catch (e) { /* ignore */ }
+}
+
+/* ====== Fly-through & Camera Helpers ====== */
+const defaultFlyPath = [
+    { center: [77.209, 28.6139], zoom: 14, pitch: 65, bearing: -20 },
+    { center: [77.2105, 28.6145], zoom: 15, pitch: 70, bearing: -40 },
+    { center: [77.212, 28.615], zoom: 16, pitch: 75, bearing: -60 }
+];
+
+function startFlyThrough(map, flyPath = defaultFlyPath) {
+    if (!map) return;
+    try {
+        setCinematicMode(true);
+        flyPath.forEach((step, i) => {
+            setTimeout(() => {
+                map.easeTo({ ...step, duration: 2500, easing: (t) => t * (2 - t) });
+                if (i === flyPath.length - 1) setTimeout(() => setCinematicMode(false), 2600);
+            }, i * 2600);
+        });
+    } catch (e) { console.warn('startFlyThrough failed:', e); }
+}
+
+function streetLevelView(map, lngLat) {
+    if (!map || !lngLat) return;
+    try {
+        setCinematicMode(true);
+        map.easeTo({ center: [lngLat.lng, lngLat.lat], zoom: 17, pitch: 80, bearing: Math.random() * 360, duration: 1800 });
+        setTimeout(() => setCinematicMode(false), 2000);
+    } catch (e) { console.warn('streetLevelView failed:', e); }
+}
+
+function setCinematicMode(active) {
+    try { document.body.classList.toggle('cinematic', !!active); } catch (e) {}
 }
