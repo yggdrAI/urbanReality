@@ -48,6 +48,95 @@ const TOMTOM_KEY = import.meta.env.VITE_TOMTOM_API_KEY;
 // Get free API key from: https://openweathermap.org/api/air-pollution
 const OPENWEATHER_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY || "";
 
+// --- Terrain Utils ---
+const TERRAIN_SAMPLE_DELTA = 0.0005;
+
+function getElevation(map, lngLat) {
+    if (!map || !lngLat) return 0;
+    try {
+        return map.queryTerrainElevation(lngLat, { exaggerated: false }) ?? 0;
+    } catch (e) {
+        return 0;
+    }
+}
+
+function getSlope(map, lngLat) {
+    if (!map || !lngLat) return 0;
+    try {
+        const e1 = getElevation(map, lngLat);
+        const e2 = getElevation(map, {
+            lng: lngLat.lng + TERRAIN_SAMPLE_DELTA,
+            lat: lngLat.lat
+        });
+        return Math.abs(e2 - e1) / TERRAIN_SAMPLE_DELTA;
+    } catch (e) {
+        return 0;
+    }
+}
+
+function getDrainageScore(map, lngLat) {
+    const slope = getSlope(map, lngLat);
+    return Math.max(0, 1 - slope * 4);
+}
+
+function calculateHeatIndex(map, lngLat, builtDensity = 0.6) {
+    const elevation = getElevation(map, lngLat);
+    const slope = getSlope(map, lngLat);
+    return Math.max(0, 1 + builtDensity * 2 - elevation * 0.002 - slope * 0.4);
+}
+
+function trafficSpeedMultiplier(map, lngLat) {
+    const slope = getSlope(map, lngLat);
+    return Math.max(0.4, 1 - slope * 0.6);
+}
+
+function populationRisk(map, lngLat, population) {
+    const floodRisk = getDrainageScore(map, lngLat);
+    const heat = calculateHeatIndex(map, lngLat);
+    return population * (floodRisk * 0.6 + heat * 0.4);
+}
+
+function simulateFlood(map, center, rainfall) {
+    if (!map || !center) return [];
+    
+    const features = [];
+    const step = 0.002;
+
+    for (let dx = -0.01; dx <= 0.01; dx += step) {
+        for (let dy = -0.01; dy <= 0.01; dy += step) {
+            try {
+                const lng = center[0] + dx;
+                const lat = center[1] + dy;
+
+                const elevation = getElevation(map, { lng, lat });
+                const drainage = getDrainageScore(map, { lng, lat });
+                const depth = Math.max(0, (rainfall - elevation * 0.02) * drainage);
+
+                if (depth <= 0) continue;
+
+                features.push({
+                    type: "Feature",
+                    properties: { depth: Math.min(depth, 5) },
+                    geometry: {
+                        type: "Polygon",
+                        coordinates: [[
+                            [lng, lat],
+                            [lng + step, lat],
+                            [lng + step, lat + step],
+                            [lng, lat + step],
+                            [lng, lat]
+                        ]]
+                    }
+                });
+            } catch (e) {
+                // Skip invalid coordinates
+            }
+        }
+    }
+
+    return features;
+}
+
 // Major Indian cities with coordinates
 const MAJOR_INDIAN_CITIES = [
     { name: "Delhi", lat: 28.6139, lng: 77.2090 },
@@ -105,7 +194,9 @@ export default function MapView() {
         aqi: true,
         flood: true,
         traffic: true,
-        floodDepth: false
+        floodDepth: false,
+        terrain: true,
+        hillshade: true
     });
 
     const [cameraState, setCameraState] = useState({
@@ -296,6 +387,60 @@ export default function MapView() {
                 });
 
                 map.setTerrain({ source: "terrain", exaggeration: 1.4 });
+
+                /* ===== HILLSHADE (TERRAIN VISUALIZATION) ===== */
+                try {
+                    map.addLayer({
+                        id: "terrain-hillshade",
+                        type: "hillshade",
+                        source: "terrain",
+                        paint: {
+                            "hillshade-exaggeration": 0.6,
+                            "hillshade-shadow-color": "#3d3d3d",
+                            "hillshade-highlight-color": "#ffffff",
+                            "hillshade-accent-color": "#9c8468"
+                        },
+                        layout: {
+                            visibility: layers.hillshade ? "visible" : "none"
+                        }
+                    });
+                } catch (e) {
+                    console.warn("Hillshade layer not supported:", e);
+                }
+
+                /* ===== TERRAIN-AWARE FLOOD SOURCE ===== */
+                try {
+                    map.addSource("flood-terrain", {
+                        type: "geojson",
+                        data: {
+                            type: "FeatureCollection",
+                            features: []
+                        }
+                    });
+
+                    map.addLayer({
+                        id: "terrain-flood-layer",
+                        type: "fill",
+                        source: "flood-terrain",
+                        paint: {
+                            "fill-color": [
+                                "interpolate",
+                                ["linear"],
+                                ["get", "depth"],
+                                0, "rgba(0,0,0,0)",
+                                0.3, "rgba(80,170,255,0.25)",
+                                1, "rgba(40,120,220,0.5)",
+                                3, "rgba(20,60,160,0.7)"
+                            ],
+                            "fill-opacity": 0.6
+                        },
+                        layout: {
+                            visibility: layers.flood ? "visible" : "none"
+                        }
+                    });
+                } catch (e) {
+                    console.warn("Terrain flood layer setup failed:", e);
+                }
 
                 /* ===== AQI (REAL-TIME FROM OPENWEATHER API) ===== */
                 const fetchAllCitiesAQI = async () => {
@@ -824,7 +969,32 @@ export default function MapView() {
                         // show loading state in popup if already mounted
                         /* AI Analysis Loading State - State already set above, popup will re-render via state */
 
-                        // Build sanitized payload for AI (explain-only)
+                        // Get terrain data for AI analysis
+                        let elevation = null;
+                        let slope = 0;
+                        let heatIndex = 0;
+                        let drainageScore = 0;
+                        
+                        try {
+                            if (mapRef.current) {
+                                const lngLat = { lng, lat };
+                                elevation = getElevation(mapRef.current, lngLat);
+                                slope = getSlope(mapRef.current, lngLat);
+                                heatIndex = calculateHeatIndex(mapRef.current, lngLat, projectedTraffic);
+                                drainageScore = getDrainageScore(mapRef.current, lngLat);
+                            }
+                        } catch (e) {
+                            console.warn("Terrain query failed:", e);
+                        }
+
+                        // Build sanitized payload for AI (explain-only) with full terrain context
+                        const terrainContext = {
+                            elevation: elevation ? Math.round(elevation) : null,
+                            slope: Math.round(slope * 100) / 100,
+                            heatIndex: Math.round(heatIndex * 100) / 100,
+                            drainageScore: Math.round(drainageScore * 100) / 100
+                        };
+
                         const aiPayload = {
                             zone: placeName,
                             year: y,
@@ -834,7 +1004,8 @@ export default function MapView() {
                             traffic: projectedTraffic,
                             floodRisk: FloodRisk,
                             peopleAffected: impact.peopleAffected,
-                            economicLossCr: impact.economicLossCr
+                            economicLossCr: impact.economicLossCr,
+                            terrain: terrainContext
                         };
 
                         // Fetch analysis with sanitized payload
@@ -1086,72 +1257,127 @@ export default function MapView() {
         const map = mapRef.current;
         if (!map.getLayer("aqi-layer")) return;
 
-        let hoverTimeout;
-        
-        const debouncedHoverUpdate = (e) => {
-            clearTimeout(hoverTimeout);
-            hoverTimeout = setTimeout(() => {
-                if (!map.getLayer("aqi-layer") || !e.features || e.features.length === 0) return;
-                
-                const feature = e.features[0];
-                const props = feature.properties;
-                const coords = e.lngLat;
-
-                // Update popup with hover data (if popup is open)
-                if (popupRef.current && popupRef.current.isOpen() && popupRootRef.current) {
-                    try {
-                        const hoverAQI = {
-                            aqi: props.aqi,
-                            pm25: props.pm25 ?? null,
-                            pm10: props.pm10 ?? null
-                        };
-
-                        popupRootRef.current.render(
-                            <LocationPopup
-                                placeName={props.city || "Hover Location"}
-                                lat={coords.lat}
-                                lng={coords.lng}
-                                year={yearRef.current}
-                                baseYear={BASE_YEAR}
-                                realTimeAQI={hoverAQI}
-                                finalAQI={props.aqi}
-                                rainfall={0}
-                                rainProbability={null}
-                                macroData={macroDataRef.current}
-                                impact={null}
-                                demographics={null}
-                                analysis={null}
-                                analysisLoading={false}
-                                openWeatherKey={OPENWEATHER_KEY}
-                                onSave={null}
-                            />
-                        );
-                    } catch (err) {
-                        console.warn("Hover update failed:", err);
-                    }
+        // Throttle function for hover updates
+        let lastCall = 0;
+        const throttle = (func, delay) => {
+            return (e) => {
+                const now = Date.now();
+                if (now - lastCall >= delay) {
+                    lastCall = now;
+                    func(e);
                 }
+            };
+        };
+        
+        const handleHover = (e) => {
+            if (!map.getLayer("aqi-layer") || !e.features || e.features.length === 0) return;
+            
+            const feature = e.features[0];
+            const props = feature.properties;
+            const coords = e.lngLat;
 
-                // Change cursor on hover
-                map.getCanvas().style.cursor = "pointer";
-            }, 120);
+            // Update popup with hover data (if popup is open)
+            if (popupRef.current && popupRef.current.isOpen() && popupRootRef.current) {
+                try {
+                    const hoverAQI = {
+                        aqi: props.aqi,
+                        pm25: props.pm25 ?? null,
+                        pm10: props.pm10 ?? null
+                    };
+
+                    popupRootRef.current.render(
+                        <LocationPopup
+                            placeName={props.city || "Hover Location"}
+                            lat={coords.lat}
+                            lng={coords.lng}
+                            year={yearRef.current}
+                            baseYear={BASE_YEAR}
+                            realTimeAQI={hoverAQI}
+                            finalAQI={props.aqi}
+                            rainfall={0}
+                            rainProbability={null}
+                            macroData={macroDataRef.current}
+                            impact={null}
+                            demographics={null}
+                            analysis={null}
+                            analysisLoading={false}
+                            openWeatherKey={OPENWEATHER_KEY}
+                            onSave={null}
+                        />
+                    );
+                } catch (err) {
+                    console.warn("Hover update failed:", err);
+                }
+            }
+
+            // Change cursor on hover
+            map.getCanvas().style.cursor = "pointer";
         };
 
+        const throttledHover = throttle(handleHover, 100);
+
         const handleMouseLeave = () => {
-            clearTimeout(hoverTimeout);
             map.getCanvas().style.cursor = "";
         };
 
-        map.on("mousemove", "aqi-layer", debouncedHoverUpdate);
+        map.on("mousemove", "aqi-layer", throttledHover);
         map.on("mouseleave", "aqi-layer", handleMouseLeave);
 
         return () => {
-            clearTimeout(hoverTimeout);
-            map.off("mousemove", "aqi-layer", debouncedHoverUpdate);
+            map.off("mousemove", "aqi-layer", throttledHover);
             map.off("mouseleave", "aqi-layer", handleMouseLeave);
         };
     }, [layers.aqi, loading]);
 
-    /* ================= FLOOD DEPTH ANIMATION ================= */
+    /* ================= TERRAIN HOVER HUD ================= */
+    useEffect(() => {
+        if (!mapRef.current || loading) return;
+
+        const map = mapRef.current;
+        let hoverTimeout;
+
+        const handleTerrainHover = (e) => {
+            clearTimeout(hoverTimeout);
+            hoverTimeout = setTimeout(() => {
+                try {
+                    const elevation = getElevation(map, e.lngLat);
+                    const slope = getSlope(map, e.lngLat);
+                    const heat = calculateHeatIndex(map, e.lngLat);
+
+                    if (elevation !== null) {
+                        map.getCanvas().style.cursor = "crosshair";
+                        
+                        // Dispatch custom event for HUD/popup integration
+                        window.dispatchEvent(new CustomEvent("terrain-hover", {
+                            detail: {
+                                elevation: Math.round(elevation),
+                                slope: parseFloat(slope.toFixed(2)),
+                                heat: parseFloat(heat.toFixed(2))
+                            }
+                        }));
+                    }
+                } catch (err) {
+                    // Terrain query may fail in some areas
+                }
+            }, 50);
+        };
+
+        const handleTerrainLeave = () => {
+            clearTimeout(hoverTimeout);
+            map.getCanvas().style.cursor = "";
+        };
+
+        map.on("mousemove", handleTerrainHover);
+        map.on("mouseleave", handleTerrainLeave);
+
+        return () => {
+            clearTimeout(hoverTimeout);
+            map.off("mousemove", handleTerrainHover);
+            map.off("mouseleave", handleTerrainLeave);
+        };
+    }, [loading]);
+
+    /* ================= FLOOD DEPTH ANIMATION (TERRAIN-AWARE) ================= */
     useEffect(() => {
         if (!mapRef.current) return;
 
@@ -1197,6 +1423,23 @@ export default function MapView() {
             const currentDepth = floodDepthRef.current + FLOOD_ANIMATION_CONFIG.depthIncrement;
             floodDepthRef.current = Math.min(currentDepth, maxDepth);
 
+            // Use terrain-aware flood if terrain-flood source exists
+            const terrainFloodSource = map.getSource("flood-terrain");
+            if (terrainFloodSource && activeLocation) {
+                const center = [activeLocation.lng, activeLocation.lat];
+                const floodFeatures = simulateFlood(
+                    map,
+                    center,
+                    rainfallRef.current * floodDepthRef.current
+                );
+                
+                terrainFloodSource.setData({
+                    type: "FeatureCollection",
+                    features: floodFeatures
+                });
+            }
+
+            // Keep original flood-depth source for backward compatibility
             floodSource.setData({
                 type: "FeatureCollection",
                 features: [
@@ -1235,7 +1478,7 @@ export default function MapView() {
                 floodAnimRef.current = null;
             }
         };
-    }, [floodMode, year, layers.floodDepth]);
+    }, [floodMode, year, layers.floodDepth, activeLocation]);
 
     /* ================= MAP STYLE SWITCHING ================= */
     const styleRef = useRef(null);
@@ -1378,6 +1621,8 @@ export default function MapView() {
         toggle("flood-layer", layers.flood);
         toggle("traffic-layer", layers.traffic);
         toggle("flood-depth-layer", layers.floodDepth);
+        toggle("terrain-hillshade", layers.hillshade);
+        toggle("terrain-flood-layer", layers.flood);
     }, [layers, loading]);
 
     /* ================= CINEMATIC CAMERA ================= */

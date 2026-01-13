@@ -25,14 +25,22 @@ html::-webkit-scrollbar, body::-webkit-scrollbar {
 }
 
 /* ===== DARK THEME MAP POPUP ===== */
+.maplibregl-popup,
+.maplibregl-popup-content,
+.maplibregl-popup-tip {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
 .maplibregl-popup {
   z-index: 1100; /* below controls which we set higher */
 }
+
 .maplibregl-popup-content {
-  background: transparent !important;
-  box-shadow: none !important;
   padding: 0 !important;
 }
+
 .maplibregl-popup-tip {
   display: none !important;
 }

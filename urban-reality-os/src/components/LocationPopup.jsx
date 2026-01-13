@@ -1,8 +1,8 @@
 import React, { useState, memo } from "react";
 import "./LocationPopup.css";
 
-// AQI Bar Component
-function AQIBar({ value }) {
+// AQI Bar Component (Memoized)
+const AQIBar = memo(function AQIBar({ value }) {
     if (!value || value === "N/A") return null;
     
     const numValue = typeof value === "number" ? value : parseInt(value);
@@ -10,21 +10,23 @@ function AQIBar({ value }) {
     
     const percent = Math.min((numValue / 500) * 100, 100);
     
-    const getColor = () => {
-        if (numValue >= 300) return "#ef4444"; // red
-        if (numValue >= 200) return "#f97316"; // orange
-        if (numValue >= 100) return "#eab308"; // yellow
-        return "#22c55e"; // green
+    const getGradient = () => {
+        if (numValue >= 300) return "linear-gradient(90deg, #ef4444, #fb7185)";
+        if (numValue >= 200) return "linear-gradient(90deg, #f97316, #fb923c)";
+        if (numValue >= 100) return "linear-gradient(90deg, #eab308, #facc15)";
+        return "linear-gradient(90deg, #22c55e, #4ade80)";
     };
+    
+    const isSevere = numValue >= 300;
     
     return (
         <div className="aqi-bar-container">
             <div className="aqi-bar-track">
                 <div
-                    className="aqi-bar-fill"
+                    className={`aqi-bar-fill ${isSevere ? "severe" : ""}`}
                     style={{
                         width: `${percent}%`,
-                        backgroundColor: getColor(),
+                        background: getGradient(),
                         transition: "all 0.7s ease"
                     }}
                 />
@@ -32,7 +34,7 @@ function AQIBar({ value }) {
             <div className="aqi-bar-label">Severity Index</div>
         </div>
     );
-}
+});
 
 // Data Badge Component
 function DataBadge({ label, live = false }) {
@@ -90,6 +92,8 @@ function LocationPopup({
 
     onSave
 }) {
+    const [saving, setSaving] = useState(false);
+    const [saveSuccess, setSaveSuccess] = useState(false);
     /* ================= DATA PROCESSING ================= */
 
     const population =
@@ -114,6 +118,26 @@ function LocationPopup({
         if (val <= 100) return "aqi-moderate";
         if (val <= 200) return "aqi-poor";
         return "aqi-severe";
+    };
+
+    const getAQILabel = (aqi) => {
+        if (!aqi || aqi === "N/A") return "N/A";
+        const val = typeof aqi === "number" ? aqi : parseInt(aqi);
+        if (isNaN(val)) return "N/A";
+        if (val >= 300) return "Severe";
+        if (val >= 200) return "Very Poor";
+        if (val >= 100) return "Moderate";
+        return "Good";
+    };
+
+    const getAQILabelColor = (aqi) => {
+        if (!aqi || aqi === "N/A") return "#94a3b8";
+        const val = typeof aqi === "number" ? aqi : parseInt(aqi);
+        if (isNaN(val)) return "#94a3b8";
+        if (val >= 300) return "#ef4444";
+        if (val >= 200) return "#f97316";
+        if (val >= 100) return "#eab308";
+        return "#22c55e";
     };
 
     const formatPopulation = (num) => {
@@ -147,14 +171,33 @@ function LocationPopup({
                     <strong id="aqi-value">{aqiValue}</strong>
                 </div>
                 <AQIBar value={aqiValue} />
-                <div className="location-popup-metric muted">
-                    <span>PM2.5</span>
-                    <strong id="pm25-value">{pm25 ? `${pm25.toFixed(1)}` : "—"}</strong>
+                <div className="aqi-severity-label">
+                    <span className="aqi-severity-text">Severity</span>
+                    <span 
+                        className="aqi-severity-value"
+                        style={{ color: getAQILabelColor(aqiValue) }}
+                    >
+                        {getAQILabel(aqiValue)}
+                    </span>
                 </div>
-                <div className="location-popup-metric muted">
-                    <span>PM10</span>
-                    <strong id="pm10-value">{pm10 ? `${pm10.toFixed(1)}` : "—"}</strong>
-                </div>
+                {(pm25 || pm10) && (
+                    <div className="metric-tiles">
+                        <div className="metric-tile">
+                            <span>PM2.5</span>
+                            <div>
+                                <strong id="pm25-value">{pm25 ? pm25.toFixed(1) : "—"}</strong>
+                                {pm25 && <span className="unit">µg/m³</span>}
+                            </div>
+                        </div>
+                        <div className="metric-tile">
+                            <span>PM10</span>
+                            <div>
+                                <strong id="pm10-value">{pm10 ? pm10.toFixed(1) : "—"}</strong>
+                                {pm10 && <span className="unit">µg/m³</span>}
+                            </div>
+                        </div>
+                    </div>
+                )}
             </Section>
 
             {/* WEATHER CARD */}
@@ -162,11 +205,11 @@ function LocationPopup({
                 title="Weather"
                 badge={{ live: true, label: "Open-Meteo" }}
             >
-                <div className="location-popup-metric">
+                <div className="location-popup-metric weather-metric">
                     <span>🌧 Rainfall</span>
                     <strong id="rainfall-value">{rainfall !== null ? `${rainfall} mm` : "0 mm"}</strong>
                 </div>
-                <div className="location-popup-metric">
+                <div className="location-popup-metric weather-metric">
                     <span>☁ Rain Prob.</span>
                     <strong id="rain-probability-value">{rainProbability !== null ? `${rainProbability}%` : "0%"}</strong>
                 </div>
@@ -188,6 +231,11 @@ function LocationPopup({
                     <span>Migrants</span>
                     <strong id="migrants-value">{migrants ? `${migrants}%` : "—"}</strong>
                 </div>
+                {(!growthRate && !migrants) && (
+                    <div className="text-xs text-slate-500 mt-2" style={{ fontSize: "11px", color: "#64748b", marginTop: "8px" }}>
+                        Growth & migration estimates are unavailable for the selected year
+                    </div>
+                )}
             </Section>
 
             {/* AI ANALYSIS SECTION */}
@@ -203,9 +251,9 @@ function LocationPopup({
                 ) : (
                     <div className="location-popup-error" id="analysis-error">
                         <div className="error-content">
-                            🤖 AI insights unavailable.
+                            🤖 AI insights are temporarily unavailable.
                             <br />
-                            <span className="error-subtext">Showing baseline data only.</span>
+                            <span className="error-subtext">Core environmental data is still live.</span>
                         </div>
                     </div>
                 )}
@@ -216,9 +264,22 @@ function LocationPopup({
                 <button
                     id="save-location-btn"
                     className="location-popup-save-btn"
-                    onClick={() => onSave(placeName)}
+                    disabled={saving}
+                    onClick={async () => {
+                        setSaving(true);
+                        setSaveSuccess(false);
+                        try {
+                            await onSave(placeName);
+                            setSaveSuccess(true);
+                            setTimeout(() => setSaveSuccess(false), 2000);
+                        } catch (err) {
+                            console.error("Save failed:", err);
+                        } finally {
+                            setSaving(false);
+                        }
+                    }}
                 >
-                    ⭐ Save Location
+                    {saving ? "Saving..." : saveSuccess ? "✓ Location saved" : "⭐ Save Location"}
                 </button>
             )}
         </div>
