@@ -1,3 +1,5 @@
+// src/utils/gemini.js
+
 // ===================================================
 // Browser-safe Gemini helper
 // Proxies requests to backend (/api/urban-analysis)
@@ -138,13 +140,16 @@ Tone: Professional, data-backed, no filler.
 }
 
 // ===================================================
-// Terrain Insight (short explanation)
+// Terrain Insight (Fixed & Robust)
 // ===================================================
-export async function getTerrainInsight(context) {
+export async function getTerrainInsight(context = {}) {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
 
   try {
+    // Safety check: Ensure context exists
+    const safeContext = context || {};
+
     const {
       elevation = 0,
       slope = 0,
@@ -152,16 +157,16 @@ export async function getTerrainInsight(context) {
       heat = 0,
       population = 0,
       aqi = 0
-    } = context;
+    } = safeContext;
 
     const prompt = `
 Explain terrain-based urban risk in simple terms.
 
 Metrics:
 - Elevation: ${elevation} m
-- Slope: ${slope.toFixed(2)}
-- Flood Risk: ${floodRisk.toFixed(2)}
-- Heat Index: ${heat.toFixed(2)}
+- Slope: ${Number(slope).toFixed(2)}
+- Flood Risk: ${Number(floodRisk).toFixed(2)}
+- Heat Index: ${Number(heat).toFixed(2)}
 - AQI: ${aqi}
 - Population: ${population ? population.toLocaleString() : "Unknown"}
 
@@ -170,6 +175,8 @@ Explain:
 2. One infrastructure improvement recommendation.
 `;
 
+    console.log("📡 Requesting Terrain Analysis...");
+
     const resp = await fetch(`${API_BASE}/api/urban-analysis`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -177,7 +184,10 @@ Explain:
       signal: controller.signal
     });
 
-    if (!resp.ok) throw new Error("Backend error");
+    if (!resp.ok) {
+        const text = await resp.text().catch(() => "Unknown error");
+        throw new Error(`Server returned ${resp.status}: ${text}`);
+    }
 
     const json = await resp.json();
     return (
@@ -188,8 +198,13 @@ Explain:
       "Terrain insight unavailable."
     );
   } catch (err) {
-    console.warn("getTerrainInsight failed:", err.message);
-    return "Insight temporarily unavailable.";
+    console.error("getTerrainInsight failed:", err);
+    
+    // Return the ACTUAL error to the UI so we can see what's wrong
+    if (err.name === "AbortError") return "Error: Request timed out.";
+    if (err.message.includes("Failed to fetch")) return "Error: Cannot connect to Server (Is it running?).";
+    
+    return `Error: ${err.message}`;
   } finally {
     clearTimeout(timeoutId);
   }
